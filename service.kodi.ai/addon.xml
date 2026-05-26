@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<addon id="service.kodi.ai"
+       name="Kodi-AI"
+       version="0.1.0"
+       provider-name="ivan">
+  <requires>
+    <import addon="xbmc.python" version="3.0.1"/>
+    <!-- Pin verified at release against Kodi 21 Omega official repo -->
+    <import addon="script.module.requests" version="2.27.1"/>
+  </requires>
+  <extension point="xbmc.service" library="service.py" start="login"/>
+  <extension point="xbmc.python.script" library="default.py">
+    <provides>executable</provides>
+  </extension>
+  <extension point="xbmc.addon.metadata">
+    <summary lang="en_GB">AI-assisted Kodi diagnostics + auto-fix</summary>
+    <description lang="en_GB">Monitors Kodi logs, classifies issues with a cheap LLM, attempts auto-fixes via OpenRouter tool-use agent, surfaces results via Telegram bot. V1 personal use on Android TV.</description>
+    <platform>all</platform>
+    <license>MIT</license>
+    <news>0.1.0: initial V1 release.</news>
+  </extension>
+</addon>

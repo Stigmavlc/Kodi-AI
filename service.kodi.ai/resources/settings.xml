@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<settings>
+  <category label="General">
+    <setting id="enabled" type="bool" label="Enabled" default="true"/>
+    <setting id="openrouter_key" type="text" label="OpenRouter API key" option="hidden" default=""/>
+    <setting id="mode" type="enum" label="Mode" values="auto|manual" default="auto"/>
+    <setting id="manual_model" type="text" label="Manual mode model ID" default="" enable="eq(-1,1)"/>
+  </category>
+  <category label="Telegram">
+    <setting id="bot_token" type="text" label="Bot token" option="hidden" default=""/>
+    <setting id="bot_username" type="text" label="Bot username (without @)" default=""/>
+    <setting id="reset_bot_owner" type="action" label="Reset bot owner" action="RunScript(special://home/addons/service.kodi.ai/default.py,reset_bot)"/>
+    <setting id="show_setup_secret" type="action" label="Show setup secret" action="RunScript(special://home/addons/service.kodi.ai/default.py,show_secret)"/>
+  </category>
+  <category label="Budget">
+    <setting id="per_incident_cap_usd" type="number" label="Per-incident cap (USD)" default="0.50" min="0.01" max="100"/>
+    <setting id="daily_cap_usd" type="number" label="Daily cap (USD)" default="5" min="0.10" max="1000"/>
+    <setting id="monthly_cap_usd" type="number" label="Monthly cap (USD)" default="30" min="1" max="10000"/>
+    <setting id="reset_time_local" type="text" label="Daily reset time (HH:MM)" default="00:00"/>
+    <setting id="timezone" type="text" label="Timezone (IANA, e.g. Europe/Madrid)" default=""/>
+    <setting id="models_override" type="text" label="Models override (JSON)" default="" option="markup"/>
+  </category>
+  <category label="Safety">
+    <setting id="redaction_allowlist_extra" type="text" label="Redaction allow-list extra (CSV)" default=""/>
+  </category>
+  <category label="Advanced">
+    <setting id="triage_rate_per_min" type="number" label="Triage rate/min" default="6" min="1" max="60"/>
+    <setting id="t2_poll_active_ms" type="number" label="T2 poll cadence (active, ms)" default="750" min="100" max="5000"/>
+    <setting id="t2_poll_idle_ms" type="number" label="T2 poll cadence (idle, ms)" default="2500" min="500" max="10000"/>
+    <setting id="snapshot_max_count" type="number" label="Snapshot max count" default="100" min="10" max="1000"/>
+    <setting id="snapshot_max_mb" type="number" label="Snapshot max MB" default="200" min="10" max="2000"/>
+    <setting id="http_proxy_host" type="text" label="HTTP proxy host" default=""/>
+    <setting id="http_proxy_port" type="number" label="HTTP proxy port" default="0" min="0" max="65535"/>
+    <setting id="diagnostic_logging" type="bool" label="Diagnostic logging" default="false"/>
+  </category>
+</settings>

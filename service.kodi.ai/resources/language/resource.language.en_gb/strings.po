@@ -1,0 +1,23 @@
+# Kodi-AI English (en_GB) strings
+msgid ""
+msgstr ""
+"Project-Id-Version: Kodi-AI\n"
+"Report-Msgid-Bugs-To: ivanaguilarmari@gmail.com\n"
+"PO-Revision-Date: 2026-05-26\n"
+"Language-Team: English (en_GB)\n"
+"Language: en_GB\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgctxt "#30000"
+msgid "Kodi-AI"
+msgstr "Kodi-AI"
+
+msgctxt "#30001"
+msgid "Show setup secret"
+msgstr "Show setup secret"
+
+msgctxt "#30002"
+msgid "Reset bot owner"
+msgstr "Reset bot owner"
