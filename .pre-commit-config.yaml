@@ -1,0 +1,15 @@
+repos:
+  - repo: local
+    hooks:
+      - id: pytest-unit
+        name: pytest unit tests
+        entry: bash -c "source .venv/bin/activate && pytest tests/unit -x --no-cov"
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: pytest-integration
+        name: pytest integration tests
+        entry: bash -c "source .venv/bin/activate && pytest tests/integration -x --no-cov -m integration || [ $? = 5 ]"
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
