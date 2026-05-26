@@ -9691,6 +9691,161 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 
 ---
 
+## Task 5.4-AMENDMENT — populate `tool_history[].output_signature` (fixes H7 dead-code)
+
+**Spec ref:** §1.4 (tool-history-match suppression — boot post-mortem rule).
+
+**Why this amendment:** Round-2 plan reviewer found that Task 4.7-REVISED's `boot_post_mortem` references `tool_entry.get("output_signature")` on `sessions/<id>.json::tool_history` entries, but **`output_signature` is never produced anywhere** — Task 5.2's `SessionState.tool_history` example uses `{"name": "read_log", "result": "..."}` and Task 5.4's `_execute_tool` returns a dict without `output_signature`. Result: tool-history-match suppression in 4.7 is dead code, and legitimate side-effects of our tools that lack the `[service.kodi.ai]` prefix would surface as bogus backdated incidents — exactly the failure H7 was supposed to address.
+
+**Fix:** Populate `output_signature` in two places:
+1. `SessionState.tool_history` schema documented to include `output_signature` field (signature of the tool's output text, computable from `prefilter.cluster_id_for`).
+2. In Task 5.4's `_execute_tool` (called inside `run_with_tools`), after dispatching the tool, append to a local `tool_history` list (separate from `messages`) and serialize that into `SessionState.tool_history` at pause-time. Each entry includes `output_signature`.
+
+**Files:** Modify `service.kodi.ai/lib/reasoner.py` (extend `_execute_tool` + `run_with_tools` to track tool_history); update `tests/unit/test_reasoner_tool_loop.py` (or add a new test).
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/unit/test_reasoner_tool_history.py
+import json
+import pytest
+from unittest import mock
+from dataclasses import dataclass
+
+
+@dataclass
+class FakeChatStreamYielder:
+    """Mimics chat_stream yield 4-tuple (chunk_text, finish_reason, usage, tool_calls)."""
+    def __init__(self, sequence):
+        self.sequence = sequence
+    def __iter__(self):
+        return iter(self.sequence)
+
+
+def test_run_with_tools_records_output_signature_per_tool():
+    """Each tool call should append to outcome.tool_history with output_signature."""
+    from lib.reasoner import Reasoner, ReasonerOutcome
+    fake_llm = mock.MagicMock()
+    # Sequence: turn 1 = tool_call read_log; turn 2 = final message
+    fake_llm.chat_stream.side_effect = [
+        FakeChatStreamYielder([
+            ("", "tool_calls", {"prompt_tokens": 100, "completion_tokens": 20},
+             [{"id": "t1", "function": {"name": "read_log", "arguments": "{}"}}]),
+        ]),
+        FakeChatStreamYielder([
+            ("all clear", None, None, None),
+            (None, "stop", {"prompt_tokens": 50, "completion_tokens": 10}, None),
+        ]),
+    ]
+    fake_registry = {
+        "read_log": mock.MagicMock(
+            return_value=mock.MagicMock(
+                success=True, output="log lines here", actual_state_after=None,
+                snapshot_id=None, error=None, requested="read_log()",
+            ))
+    }
+    r = Reasoner(
+        llm_client=fake_llm, api_key="k",
+        router=mock.MagicMock(pick=lambda c: "m", price_per_mtok=lambda m: (1.0, 5.0)),
+        budget=mock.MagicMock(
+            pre_call_check=lambda estimated_cost: (True, None),
+            mid_stream_check=lambda streamed_cost: True,
+            record_actual=lambda c: None,
+            incident_cost_usd=0.0,
+        ),
+        tool_registry=fake_registry,
+    )
+    out = r.run_with_tools(
+        initial_messages=[{"role": "user", "content": "diagnose"}],
+        task_class="t1_simple", session_id="s1", max_turns=5,
+    )
+    # tool_history populated with output_signature
+    assert len(out.tool_history) == 1
+    entry = out.tool_history[0]
+    assert entry["name"] == "read_log"
+    assert "output_signature" in entry
+    # signature is the cluster_id_for of the serialized output
+    from lib.prefilter import cluster_id_for
+    assert entry["output_signature"] == cluster_id_for("log lines here")
+```
+
+- [ ] **Step 2: Modify `lib/reasoner.py`**
+
+In `ReasonerOutcome`, add field:
+```python
+@dataclass
+class ReasonerOutcome:
+    # ... existing fields ...
+    tool_history: list[dict] = field(default_factory=list)
+```
+
+In `Reasoner._execute_tool`, after dispatching, return the tool_result dict (already done). Caller (`run_with_tools`) builds the `tool_history` entry:
+
+```python
+# Inside run_with_tools, after each tool dispatch + before continuing loop:
+                    from .prefilter import cluster_id_for
+                    output_str = str(tool_result.get("output") or "")
+                    tool_history_entry = {
+                        "name": fn["name"],
+                        "args_json": fn.get("arguments", "{}"),
+                        "success": bool(tool_result.get("success")),
+                        "output_signature": cluster_id_for(output_str),
+                        "snapshot_id": tool_result.get("snapshot_id"),
+                        "error": tool_result.get("error"),
+                    }
+                    tool_history.append(tool_history_entry)
+```
+
+Initialize `tool_history: list[dict] = []` near the top of `run_with_tools`. Pass it into the returned `ReasonerOutcome(..., tool_history=tool_history)` on EVERY return path (complete, budget_refused, error, budget_truncated, max_turns, needs_user).
+
+At pause-time (Task 5.6 `pause_and_persist`), the caller serializes `outcome.tool_history` into `state.tool_history` (this is already implicit since `SessionState.tool_history` is just `list[dict]` and `pause_and_persist` doesn't transform it — the upstream `_handle_incident` / `_handle_user_msg` in Task 10.3 should copy `outcome.tool_history` into the `SessionState` before passing to `pause_and_persist`).
+
+- [ ] **Step 3: Document `output_signature` field in Task 5.2's SessionState schema**
+
+Update the `SessionState` docstring (or add a comment) noting that `tool_history` items are dicts with shape:
+```python
+{
+    "name": str,                    # tool name
+    "args_json": str,               # raw JSON args string from LLM
+    "success": bool,
+    "output_signature": str,        # prefilter.cluster_id_for(str(output))
+                                    # — used by boot_post_mortem to suppress
+                                    # tool-side-effect log lines per spec §1.4
+    "snapshot_id": str | None,
+    "error": str | None,
+}
+```
+
+- [ ] **Step 4: Run tests + commit**
+
+```bash
+pytest tests/unit/test_reasoner_tool_history.py -v
+git add service.kodi.ai/lib/reasoner.py tests/unit/test_reasoner_tool_history.py
+git commit -m "fix(reasoner): populate tool_history[].output_signature (H7 dead-code)
+
+Per spec §1.4 tool-history-match suppression in boot_post_mortem.
+ReasonerOutcome gains tool_history: list[dict] (default_factory=list).
+run_with_tools appends one entry per dispatched tool:
+  {name, args_json, success, output_signature: cluster_id_for(str(output)),
+   snapshot_id, error}.
+All return paths (complete/budget_refused/error/budget_truncated/max_turns/
+needs_user) carry tool_history.
+SessionState.tool_history is the on-disk persistence target — caller
+(Task 10.3 _handle_*) copies outcome.tool_history into SessionState
+before pause_and_persist.
+
+Without this fix, boot_post_mortem's tool-history-match branch in
+Task 4.7-REVISED is dead code at runtime — legitimate tool side-effect
+log lines (those without [service.kodi.ai] prefix) would surface as
+bogus backdated incidents, defeating the H7 fix.
+
+Round-2 plan-review fix: H7 dead-code completion.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
 
 
 
