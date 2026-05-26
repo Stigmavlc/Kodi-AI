@@ -1,0 +1,6 @@
+pytest>=8.0
+pytest-cov>=4.1
+freezegun>=1.4
+responses>=0.25
+kodistubs>=21.0
+pre-commit>=3.6

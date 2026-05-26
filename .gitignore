@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+build/
+dist/
+
+# Kodi runtime artifacts (when testing locally)
+.kodi/temp/
+.kodi/userdata/Database/
+.kodi/userdata/Thumbnails/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Local secrets / config overrides
+.env
+secrets.local.json
+addon_data_local/
