@@ -10,6 +10,8 @@ import time
 import pytest
 from unittest import mock
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture(autouse=True)
 def setup_paths(tmp_path, monkeypatch):

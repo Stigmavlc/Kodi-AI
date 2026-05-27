@@ -9,7 +9,25 @@ sys.modules["xbmcvfs"] = fake_xbmcvfs
 
 @pytest.fixture(autouse=True)
 def reset_fake_fs():
+    """Wipe the fake test FS between tests AND re-bind state_paths.xbmcvfs
+    to the integration fake.
+
+    The re-bind is defensive: unit tests that ran earlier in the same
+    pytest invocation may have used monkeypatch.setattr to swap
+    state_paths.xbmcvfs to a MagicMock. monkeypatch restores the
+    PRE-monkeypatch reference at teardown — which, for unit-only runs,
+    is the real kodistubs xbmcvfs (NOT the fake we register above for
+    integration). So state_paths.xbmcvfs may end up pointing at the
+    kodistubs stub (whose translatePath returns '') by the time
+    integration tests run. Re-bind here every test so log_watcher,
+    audit_log, etc. consistently see the in-memory test FS.
+
+    See HANDOVER.md Section 4 issue #77 for the cross-suite pollution
+    root cause.
+    """
     fake_xbmcvfs.reset_test_fs()
+    if "lib.state_paths" in sys.modules:
+        sys.modules["lib.state_paths"].xbmcvfs = fake_xbmcvfs
     yield
     fake_xbmcvfs.reset_test_fs()
 
