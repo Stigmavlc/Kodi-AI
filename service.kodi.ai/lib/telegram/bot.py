@@ -4,7 +4,14 @@ requests.get(getUpdates, timeout=(3,10)) — accepts 10s worst-case shutdown.
 Auth via lib/telegram/auth.py. Dispatches via lib/telegram/commands.py and
 lib/telegram/callbacks.py.
 
-Spec: §1.2, §1.10, §4.5.
+v0.3.0 inline-setup DM flow:
+  After /start <secret> authorizes a new user, if openrouter_key is empty
+  we enter AWAITING_OR_KEY state and treat the next non-command message as
+  the OpenRouter API key. Once validated we transition to AWAITING_MODE
+  and present inline buttons for mode selection (callback_data prefix
+  'setup_mode:').
+
+Spec: §1.2, §1.10, §4.5; v0.3.0 settings-inline setup pivot §E.
 """
 from __future__ import annotations
 import time
@@ -12,6 +19,7 @@ import random
 import requests
 from ..concurrency import abort_event, enqueue, UserMsg, ResumeWork
 from . import auth
+from . import setup_dm_state
 
 
 class TelegramBot:
@@ -45,6 +53,22 @@ class TelegramBot:
         r = requests.post(self._url("editMessageText"), json=payload, timeout=(3, 10))
         return r.json()
 
+    def delete_message(self, chat_id: int, message_id: int) -> dict:
+        """Delete a message in the chat (best-effort; ignored on failure).
+
+        Used to scrub the OpenRouter key the user pastes during setup DM
+        flow so the plaintext key doesn't sit in their chat history.
+        """
+        try:
+            r = requests.post(
+                self._url("deleteMessage"),
+                json={"chat_id": chat_id, "message_id": message_id},
+                timeout=(3, 5),
+            )
+            return r.json()
+        except Exception:
+            return {"ok": False}
+
     def answer_callback_query(self, callback_id: str, text: str = "") -> None:
         try:
             requests.post(self._url("answerCallbackQuery"),
@@ -58,13 +82,24 @@ class TelegramBot:
         return r.json()
 
     def _handle_update(self, upd: dict) -> None:
-        # Callback queries → ResumeWork
+        # Callback queries → ResumeWork OR setup_mode:* selection
         if "callback_query" in upd:
             cq = upd["callback_query"]
             chat_id = cq["message"]["chat"]["id"]
             if not auth.is_authorized(chat_id):
+                self.answer_callback_query(cq["id"])
                 return
             data = cq.get("data", "")
+            # v0.3.0 setup mode callback handled here so we own the message
+            # edit + state transition (no work-queue indirection needed).
+            if data.startswith("setup_mode:"):
+                from . import setup_callbacks
+                try:
+                    setup_callbacks.handle_setup_mode_callback(self, cq, data)
+                except Exception:
+                    pass
+                self.answer_callback_query(cq["id"])
+                return
             # data format: "resume:<session_id>:<user_reply>"
             parts = data.split(":", 2)
             if len(parts) >= 3 and parts[0] == "resume":
@@ -84,15 +119,67 @@ class TelegramBot:
             if text.startswith("/start "):
                 secret = text[len("/start "):].strip()
                 if auth.try_authorize_first_start(chat_id, secret):
-                    self.send_message(chat_id, "Welcome — Kodi-AI ready.")
+                    self._on_first_authorize(chat_id)
                 else:
                     self.send_message(chat_id, "Invalid secret. Send /start &lt;secret&gt;.")
                 return
             if not auth.is_authorized(chat_id):
                 self.send_message(chat_id, "Please send /start &lt;secret&gt; from your Kodi setup.")
                 return
+            # Authorized — check if we're mid-setup-DM-flow.
+            try:
+                dm_state = setup_dm_state.get_state(chat_id)
+            except Exception:
+                dm_state = None
+            if dm_state == setup_dm_state.AWAITING_OR_KEY:
+                from . import setup_callbacks
+                try:
+                    setup_callbacks.handle_or_key_message(self, chat_id, text, mid)
+                except Exception:
+                    self.send_message(
+                        chat_id,
+                        "Unexpected error validating key. Please try again.",
+                    )
+                return
+            if dm_state == setup_dm_state.AWAITING_MODE:
+                # Tell user to use the inline buttons.
+                self.send_message(
+                    chat_id,
+                    "Please tap one of the buttons above to choose agent mode.",
+                )
+                return
+            # Normal flow: enqueue for the reasoner.
             enqueue(UserMsg(chat_id=chat_id, text=text, message_id=mid,
                             reply_to_message_id=reply_to))
+
+    def _on_first_authorize(self, chat_id: int) -> None:
+        """User just paired via /start <secret>. Decide whether to enter
+        the DM setup flow (if openrouter_key is missing) or just greet."""
+        from .. import secrets as lib_secrets
+        try:
+            has_key = bool(lib_secrets.get_secret("openrouter_key"))
+        except Exception:
+            has_key = False
+        if has_key:
+            # All set — normal welcome.
+            self.send_message(chat_id, "Welcome — Kodi-AI ready.")
+            try:
+                setup_dm_state.set_state(chat_id, setup_dm_state.DONE)
+            except Exception:
+                pass
+            return
+        # Kick off the DM setup flow: ask for OpenRouter key.
+        self.send_message(
+            chat_id,
+            "Welcome to Kodi-AI! Please send me your OpenRouter API key "
+            "(starts with <code>sk-or-</code>).\n\n"
+            "Get one at <b>openrouter.ai/keys</b> if you don't have one "
+            "(~$5 typical credit).",
+        )
+        try:
+            setup_dm_state.set_state(chat_id, setup_dm_state.AWAITING_OR_KEY)
+        except Exception:
+            pass
 
     def run(self) -> None:
         from ..concurrency import startup_complete_event
