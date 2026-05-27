@@ -1,9 +1,9 @@
 # Kodi-AI V1 — Session Handover
 
-**Last updated:** 2026-05-27 (in-session: Phases 1-3 COMPLETE + Tasks 4.1-4.3 done, reviewer-vetted)
+**Last updated:** 2026-05-27 (in-session: Phases 1-3 COMPLETE + Tasks 4.1-4.4 done, reviewer-vetted)
 **Project root:** `/Users/ivan/Desktop/Web Development  Projects/Completed By Me/Kodi-AI/`
 **Git branch:** `main`
-**Latest commit:** `af8c30b` (feat(prefilter): signature normalization + benign-noise allowlist)
+**Latest commit:** `7c6ae8e` (feat(log_watcher): T2 core poll loop + parse + enqueue)
 
 This document tracks **exactly what's left to implement**, by phase and by task, so any future session can pick up cleanly. It is read by the `/load-context` slash command at session start and updated by `/save-context` at session end.
 
@@ -84,7 +84,7 @@ Per task, the plan's own task ID maps to a line range in `docs/superpowers/plans
 | 4.1 `lib/log_capture.py` (logging.Handler + stderr wrapper + recursion guard + 1s dedup) | ✅ done | `55c6636`. Spec §5.9. Plan-verbatim except (a) test re-bind (7th file) and (b) UNJUSTIFIED-but-harmless cosmetic `→` → `->` in module docstring. 101/101 unit tests pass. Both reviewers CLEAN. |
 | 4.2 `lib/log_sentinels.py` (LOGINFO audit sentinels + parse_sentinel) | ✅ done | `9512369`. Spec §1.3, §5.6. Plan-locked test data (`xyz789`) required regex broadening from `[a-f0-9]+` → `[a-z0-9]+` (plan defect — see §4 #71). Test re-bind 8th file. 104/104 unit tests pass. Both reviewers CLEAN. |
 | 4.3 `lib/prefilter.py` (signature normalization + benign allowlist) | ✅ done | `af8c30b`. Spec §1.4. Plan-verbatim, ZERO deviations. 112/112 unit tests pass. Both reviewers CLEAN. |
-| 4.4 `lib/log_watcher.py` core (poll/parse/cluster/enqueue) | ⏸ pending | Spec §1.4, §3.1 |
+| 4.4 `lib/log_watcher.py` core (poll/parse/cluster/enqueue) | ✅ done | `7c6ae8e`. Spec §1.4, §3.1. Plan-verbatim, ZERO deviations. 112 unit + 1 integration test pass. First `@pytest.mark.integration` test (~5s). Both reviewers CLEAN. |
 | 4.5 log_watcher 3-signal rotation + 1MB cap + adaptive cadence | ⏸ pending | Spec §1.4 |
 | **4.6-REVISED** log_watcher buffer-and-evaluate per-tool-boundary | ⏸ pending | Spec §1.3, §1.5. **Round-1 plan-review fix C5.** Supersedes original 4.6. Requires `ActiveCalls.last_window_targets()` from Task 1.5. |
 | **4.7-REVISED** log_watcher boot post-mortem per-session state machine + tool-history-match | ⏸ pending | Spec §1.4. **Round-1 plan-review fix H7 + round-2 fix.** Requires `tool_history[].output_signature` from Task 5.4-AMENDMENT. |
@@ -318,6 +318,14 @@ These are issues caught by reviewers during Phase 0 that are NOT yet fixed and s
 71. **🔧 PLAN DEFECT — Task 4.2 regex `[a-f0-9]+` vs test data `xyz789`** (Task 4.2 spec review): plan line 4094 regex would never match plan line 4061 test (`xyz789` has non-hex chars). Implementer broadened to `[a-z0-9]+`. Runtime impact none (real session IDs from `secrets.token_hex` are hex, strict subset of `[a-z0-9]+`). Fix plan at next revision.
 
 72. **HANDOVER.md drift during heavy task throughput** (this session, 2026-05-27): pre-commit hook stash/restore lost HANDOVER.md unstaged edits between Tasks 4.1 + 4.2 + 4.3 (recovered + re-applied here). **Action: from now on, commit HANDOVER.md after EVERY task** (not just at phase boundaries) to avoid stash-race re-loss.
+
+73. **`log_watcher.py` unused `import time` + `import xbmcvfs`** (Task 4.4 code review, plan-verbatim): both imports will become live in Tasks 4.5-4.7 (`time.monotonic` for adaptive cadence; `xbmcvfs.Stat` for rotation detection). Forward-looking; ruff/flake8 F401 in Phase 12 lint pass.
+
+74. **`log_watcher` partial-line read can cluster incomplete body** (Task 4.4 code review, plan-acknowledged): if Kodi flushes a log line in two pieces, `_ingest_chunk` clusters the partial; the completion arrives next poll without a level prefix and is dropped. Net: cluster captures incomplete body. Plan addresses at Task 4.6 (trace-continuation).
+
+75. **`log_watcher.active_cluster_ids` never cleaned up — grows unbounded** (Task 4.4 code review, forward-looking): T4 lifecycle cleanup not implemented (plan doesn't specify). Risk surfaces when (a) cluster_id collisions across days/sessions, or (b) Task 4.5+ integration tests share cluster_ids. Add T4 cleanup hook at Task 10.2 wiring.
+
+76. **`set_startup_complete` autouse fixture leaks `active_cluster_ids` between integration tests** (Task 4.4 code review): comment in fixture says "Don't clear — other tests may run after" but only refers to startup_complete_event. Future integration tests may collide on cluster_id. Add explicit `active_cluster_ids.clear()` in next integration-test-adding task OR widen `reset_fake_fs` fixture to clear concurrency state.
 
 ---
 
