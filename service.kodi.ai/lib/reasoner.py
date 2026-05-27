@@ -153,6 +153,18 @@ class Reasoner:
                         tokens_streamed += max(1, len(chunk_text) // 4)
                         streamed_cost = tokens_streamed * out_p / 1_000_000
                         if not self.budget.mid_stream_check(streamed_cost=streamed_cost):
+                            # Synthetic envelope per spec §5.5 / plan 5.4-REVISED:
+                            # forward-compat for Task 5.6 message-replay on resume.
+                            synthetic_result = {
+                                "role": "tool", "tool_call_id": "budget_truncated",
+                                "content": json.dumps({
+                                    "error": "budget_truncated",
+                                    "tokens_streamed": tokens_streamed,
+                                    "estimated_cost_so_far": f"${self.budget.incident_cost_usd + streamed_cost:.4f}",
+                                }),
+                            }
+                            messages.append({"role": "assistant", "content": "<<<budget-truncated>>>"})
+                            messages.append(synthetic_result)
                             return ReasonerOutcome(
                                 final_message="",
                                 terminal_reason="budget_truncated",
