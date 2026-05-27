@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <settings>
+  <category label="Setup">
+    <setting id="run_setup_wizard" type="action" label="▶  Run Setup Wizard (first-time setup)" action="RunScript(special://home/addons/service.kodi.ai/default.py,setup_wizard)"/>
+    <setting id="open_status_panel" type="action" label="📊  Open Status Panel" action="RunScript(special://home/addons/service.kodi.ai/default.py)"/>
+  </category>
   <category label="General">
     <setting id="enabled" type="bool" label="Enabled" default="true"/>
     <setting id="openrouter_key" type="text" label="OpenRouter API key" option="hidden" default=""/>
