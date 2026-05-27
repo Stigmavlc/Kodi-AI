@@ -9,7 +9,7 @@
 
 All implementation phases (0-12 minus 12.3) are done. The addon is installable, tested, and documented.
 
-**To install:** see `README.md` Quick Install. Build artifacts via `python tools/build_repo.py` produce `dist/repository.kodi-ai.ivanaguilarmari-0.1.0.zip` (install first) + `dist/service.kodi.ai-0.1.0.zip` (the addon).
+**To install:** see `README.md` Quick Install. Build artifacts via `python tools/build_repo.py` produce `dist/repository.kodi-ai.stigmavlc-0.1.0.zip` (install first) + `dist/service.kodi.ai-0.1.0.zip` (the addon).
 
 **Only remaining task:** Task 12.3 — manual acceptance test on Nvidia Shield Pro (cannot be performed by Claude; user runs through the install + setup wizard + watches a real Kodi log incident get handled by the agent).
 
@@ -172,9 +172,9 @@ Per task, the plan's own task ID maps to a line range in `docs/superpowers/plans
 
 | Task | Status | Notes |
 |---|---|---|
-| 12.1 `tools/build_repo.py` + GitHub Pages layout | ✅ done | `97e377d`. Spec §7.1, §7.4. Produces `dist/service.kodi.ai-0.1.0.zip` (86 KB), `dist/repository.kodi-ai.ivanaguilarmari-0.1.0.zip` (~552 B), `dist/repo/{addons.xml,addons.xml.md5}`, `dist/repo/service.kodi.ai/`. `.github/workflows/publish-repo.yml` auto-deploys to GitHub Pages on push to main. Zip excludes __pycache__/*.pyc/tests/.gitkeep/.DS_Store. |
+| 12.1 `tools/build_repo.py` + GitHub Pages layout | ✅ done | `97e377d`. Spec §7.1, §7.4. Produces `dist/service.kodi.ai-0.1.0.zip` (86 KB), `dist/repository.kodi-ai.stigmavlc-0.1.0.zip` (~552 B), `dist/repo/{addons.xml,addons.xml.md5}`, `dist/repo/service.kodi.ai/`. `.github/workflows/publish-repo.yml` auto-deploys to GitHub Pages on push to main. Zip excludes __pycache__/*.pyc/tests/.gitkeep/.DS_Store. |
 | 12.2 User-facing docs | ✅ done | `bbe202d`. Spec §7.8. README (188L install + use guide), CHANGELOG (0.1.0 entry), PRIVACY (redaction guarantees + Telegram retention), SECURITY (threat model + disclosure email), UNINSTALL (step-by-step incl. state-dir delete), LICENSE (MIT), THIRD_PARTY_NOTICES (Kodi/Telegram/OpenRouter attribution). |
-| 12.3 Acceptance tests on Shield Pro (manual user task) | ⏸ pending — REQUIRES USER | Spec §6.4, §6.6, §6.7. Cannot be done by Claude — user must:<br>1. Enable GitHub Pages in repo settings.<br>2. Push and let CI publish.<br>3. On Shield Pro: install `repository.kodi-ai.ivanaguilarmari-0.1.0.zip` via Settings → Add-ons → Install from zip.<br>4. Settings → Add-ons → Install from repository → Kodi-AI → Services → Kodi-AI → Install.<br>5. Programs → Kodi-AI (run setup wizard with OpenRouter key + bot_token).<br>6. Trigger a test issue (disable a stable repo addon to simulate cluster) and observe Telegram bot reaction. |
+| 12.3 Acceptance tests on Shield Pro (manual user task) | ⏸ pending — REQUIRES USER | Spec §6.4, §6.6, §6.7. Cannot be done by Claude — user must:<br>1. Enable GitHub Pages in repo settings.<br>2. Push and let CI publish.<br>3. On Shield Pro: install `repository.kodi-ai.stigmavlc-0.1.0.zip` via Settings → Add-ons → Install from zip.<br>4. Settings → Add-ons → Install from repository → Kodi-AI → Services → Kodi-AI → Install.<br>5. Programs → Kodi-AI (run setup wizard with OpenRouter key + bot_token).<br>6. Trigger a test issue (disable a stable repo addon to simulate cluster) and observe Telegram bot reaction. |
 
 ---
 

@@ -92,7 +92,7 @@
 - Acceptance tests on Shield Pro (Task 12.3) cannot be performed by Claude — user must test manually.
 
 **Installable artifacts** (run `python tools/build_repo.py`):
-- `dist/repository.kodi-ai.ivanaguilarmari-0.1.0.zip` — install first (provides the repository).
+- `dist/repository.kodi-ai.stigmavlc-0.1.0.zip` — install first (provides the repository).
 - `dist/service.kodi.ai-0.1.0.zip` — the addon itself (also installable directly via "Install from zip").
 - `dist/repo/addons.xml` + `.md5` — for GitHub Pages distribution.
 

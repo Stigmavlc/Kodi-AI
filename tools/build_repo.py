@@ -22,10 +22,10 @@ import sys
 import xml.etree.ElementTree as ET
 import zipfile
 
-REPO_ID = "repository.kodi-ai.ivanaguilarmari"
+REPO_ID = "repository.kodi-ai.stigmavlc"
 REPO_NAME = "Kodi-AI Repository"
 REPO_AUTHOR = "Ivan Aguilar Mari"
-REPO_BASE_URL = "https://ivanaguilarmari.github.io/Kodi-AI/repo"
+REPO_BASE_URL = "https://stigmavlc.github.io/Kodi-AI/repo"
 
 
 def read_addon_version(addon_xml: str) -> tuple[str, str]:

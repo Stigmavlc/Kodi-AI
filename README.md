@@ -17,7 +17,7 @@ cloud state. Long-poll Telegram only. All session data lives on the device.
 ### Method 1: Repository (recommended)
 
 1. On Android TV, enable **Settings → System → Add-ons → Unknown sources**.
-2. Download `repository.kodi-ai.ivanaguilarmari-0.1.0.zip` from this repo's
+2. Download `repository.kodi-ai.stigmavlc-0.1.0.zip` from this repo's
    Releases page (or build it yourself, see below).
 3. In Kodi: **Add-ons → Install from zip file →** select the repository zip.
 4. **Add-ons → Install from repository → Kodi-AI Repository → Services →
@@ -33,7 +33,7 @@ cloud state. Long-poll Telegram only. All session data lives on the device.
 ### Build locally
 
 ```bash
-git clone https://github.com/ivanaguilarmari/Kodi-AI.git
+git clone https://github.com/Stigmavlc/Kodi-AI.git
 cd Kodi-AI
 python tools/build_repo.py
 # Produces dist/service.kodi.ai-0.1.0.zip and dist/repository.kodi-ai-*.zip
