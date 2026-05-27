@@ -22,6 +22,11 @@ class ReasonerOutcome:
     cost_usd: float = 0.0
     snapshot_ids: list[str] = field(default_factory=list)
     tool_history: list[dict] = field(default_factory=list)
+    # Task 5.5: pause/resume state carried out on terminal_reason='needs_user'.
+    # service.py serializes these into SessionState for telegram_ask + budget.pause.
+    pending_tool: str | None = None
+    pending_args: str | None = None
+    messages_so_far: list[dict] = field(default_factory=list)
 
 
 class Reasoner:
@@ -119,6 +124,18 @@ class Reasoner:
         turns = 0
 
         for turns in range(1, max_turns + 1):
+            # Task 5.5: global abort_event short-circuits the loop before
+            # any LLM call. Set by Main on Monitor.abortRequested() (spec §1.10).
+            from .concurrency import abort_event as _global_abort_event
+            if _global_abort_event.is_set():
+                return ReasonerOutcome(
+                    final_message="",
+                    terminal_reason="aborted",
+                    tool_calls_made=turns - 1,
+                    cost_usd=cost,
+                    snapshot_ids=snapshot_ids,
+                    tool_history=tool_history,
+                )
             est = self._estimate_cost(model, messages, max_tokens=2048)
             ok, reason = self.budget.pre_call_check(estimated_cost=est)
             if not ok:
@@ -201,9 +218,11 @@ class Reasoner:
             if accumulated_tool_calls:
                 for tc in accumulated_tool_calls:
                     fn = tc.get("function", {})
+                    tool_name = fn.get("name", "")
+                    tool_args = fn.get("arguments", "{}")
                     tool_result = self._execute_tool(
-                        fn.get("name", ""),
-                        fn.get("arguments", "{}"),
+                        tool_name,
+                        tool_args,
                         session_id,
                     )
                     if tool_result.get("snapshot_id"):
@@ -211,8 +230,8 @@ class Reasoner:
 
                     output_str = str(tool_result.get("output") or "")
                     tool_history.append({
-                        "name": fn.get("name", ""),
-                        "args_json": fn.get("arguments", "{}"),
+                        "name": tool_name,
+                        "args_json": tool_args,
                         "success": bool(tool_result.get("success")),
                         "output_signature": cluster_id_for(output_str),
                         "snapshot_id": tool_result.get("snapshot_id"),
@@ -225,6 +244,31 @@ class Reasoner:
                         "tool_call_id": tc.get("id", ""),
                         "content": json.dumps(tool_result),
                     })
+
+                    # Task 5.5: pause if tool requires user confirmation.
+                    # Trigger sources: tool.requires_user_confirmation is True OR
+                    # tool returned error=='NEEDS_USER' (spec §1.7). On pause we
+                    # capture pending_tool/pending_args + full messages_so_far
+                    # so service.py can persist SessionState and ask the user.
+                    # Strict `is True` check — MagicMock attrs return MagicMock
+                    # (truthy) by default, so a bare `if needs_pause` would
+                    # spuriously pause in tests that never set this marker.
+                    tool_obj = self.tool_registry.get(tool_name)
+                    needs_pause = (
+                        getattr(tool_obj, "requires_user_confirmation", False) is True
+                    )
+                    if needs_pause or tool_result.get("error") == "NEEDS_USER":
+                        return ReasonerOutcome(
+                            final_message="",
+                            terminal_reason="needs_user",
+                            tool_calls_made=turns,
+                            cost_usd=cost,
+                            snapshot_ids=snapshot_ids,
+                            tool_history=tool_history,
+                            pending_tool=tool_name,
+                            pending_args=tool_args,
+                            messages_so_far=list(messages),
+                        )
                 continue
 
             return ReasonerOutcome(
@@ -243,4 +287,34 @@ class Reasoner:
             snapshot_ids=snapshot_ids,
             tool_history=tool_history,
             notes=f"hit max_turns={max_turns}",
+        )
+
+    def resume_from(
+        self,
+        *,
+        state,
+        user_reply,
+        task_class: str,
+        max_turns: int = 15,
+    ) -> ReasonerOutcome:
+        """Resume a paused session with the user's reply to the pending tool.
+
+        Reconstructs the message history captured in SessionState, appends a
+        tool-role message carrying the user_reply (so the model sees it as the
+        tool's belated output), and continues the run_with_tools loop.
+
+        Spec: §1.7 (pause/resume sequence).
+        """
+        messages = list(state.messages)
+        if state.pending_tool:
+            messages.append({
+                "role": "tool",
+                "tool_call_id": "user_resume",
+                "content": json.dumps({"user_reply": user_reply}),
+            })
+        return self.run_with_tools(
+            initial_messages=messages,
+            task_class=task_class,
+            session_id=state.session_id,
+            max_turns=max_turns,
         )
