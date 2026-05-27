@@ -64,3 +64,15 @@ def reset_active_cluster_ids():
     active_cluster_ids.clear()
     yield
     active_cluster_ids.clear()
+
+
+@pytest.fixture(autouse=True)
+def reset_abort_event():
+    """abort_event is a module-level shutdown signal; tests that set it
+    (e.g. log_watcher tests) must not leak the set state to subsequent
+    tests that poll abort_event.wait() in tight loops (e.g. tool
+    builtin_with_verify)."""
+    from lib.concurrency import abort_event
+    abort_event.clear()
+    yield
+    abort_event.clear()
