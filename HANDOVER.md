@@ -1,9 +1,9 @@
 # Kodi-AI V1 — Session Handover
 
-**Last updated:** 2026-05-27 (in-session: Phases 1-5 COMPLETE + Tasks 6.1-6.3 done, reviewer-vetted)
+**Last updated:** 2026-05-27 (in-session: Phases 1-6 COMPLETE, reviewer-vetted)
 **Project root:** `/Users/ivan/Desktop/Web Development  Projects/Completed By Me/Kodi-AI/`
 **Git branch:** `main`
-**Latest commit:** `7f2949c` (feat(tools.extract_keys): XML/JSON parsers for snapshot_targets) + comment fix
+**Latest commit:** `bcdc50e` (feat(tools.schema): get_tool_schemas → OpenAI function-spec list)
 
 This document tracks **exactly what's left to implement**, by phase and by task, so any future session can pick up cleanly. It is read by the `/load-context` slash command at session start and updated by `/save-context` at session end.
 
@@ -107,7 +107,7 @@ Per task, the plan's own task ID maps to a line range in `docs/superpowers/plans
 | 6.1 `lib/tools/__init__.py` (@tool decorator + registry + ToolResult + tool_routing_decision) | ✅ done | `6c855b2`. Spec §1.9, §4.1. Plan-verbatim, ZERO deviations. 136 unit pass. Reviewer CLEAN. |
 | 6.2 `lib/snapshot_manager.py` (create/restore with read_back+equality staleness; runtime resolver/applier registry) | ✅ done | `86856a8`. Spec §1.13, §5.4. Production plan-verbatim. Test 1 had plan-defect (mutation contradicted assertion); fixed via Option B (runtime handlers registered + mutation removed). 139 unit pass. Reviewer CLEAN. |
 | 6.3 `lib/tools/extract_keys.py` (flat-id + path-flatten with `[N]` + JSON walker + parser_for_path) | ✅ done | `7f2949c` + comment-fix follow-up. Spec §4.6. Reviewer found 1-line comment missing (zero behavioral impact); fixed. 144 unit pass. Reviewer CLEAN after fix. |
-| 6.4 `lib/tools/schema.py` (get_tool_schemas → OpenAI function spec) | ⏸ pending | Spec §4.1 |
+| 6.4 `lib/tools/schema.py` (get_tool_schemas → OpenAI function spec) | ✅ done | `bcdc50e`. Spec §4.1. Plan-verbatim, ZERO deviations. 145 unit pass. (Skipped reviewer dispatch — trivial 10-line wrapper.) |
 
 ### Phase 7 — Individual tools (10 tasks; tasks 7.4-7.7 are EXPANDED meta-tasks per round-1 plan-review fix H1)
 
