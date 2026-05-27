@@ -220,12 +220,45 @@ class Reasoner:
                     fn = tc.get("function", {})
                     tool_name = fn.get("name", "")
                     tool_args = fn.get("arguments", "{}")
+
+                    # Task 7.10: pre-call snapshot if tool declares snapshot_targets.
+                    # snapshot_targets_fn(args) returns a list of SnapshotTarget — if
+                    # non-empty, create() runs before tool dispatch so the /undo path
+                    # has a restore point. Failures are swallowed; the tool still runs.
+                    # V1 tools currently declare no snapshot_targets (NOOP today;
+                    # activates when kodi_addons/kodi_settings register them).
+                    snapshot_id_for_call = None
+                    tool_obj = self.tool_registry.get(tool_name)
+                    if tool_obj is not None and getattr(tool_obj, "snapshot_targets_fn", None):
+                        try:
+                            args_dict = json.loads(tool_args)
+                        except (json.JSONDecodeError, TypeError):
+                            args_dict = {}
+                        try:
+                            targets = tool_obj.snapshot_targets_fn(args_dict)
+                            if targets:
+                                from . import snapshot_manager
+                                snapshot_id_for_call = snapshot_manager.create(
+                                    label=f"pre_{tool_name}",
+                                    targets=targets,
+                                    session_id=session_id,
+                                )
+                        except Exception:
+                            # Snapshot failure → log + continue; tool may still need to run.
+                            # The tool itself decides whether to refuse without a snapshot.
+                            snapshot_id_for_call = None
+
                     tool_result = self._execute_tool(
                         tool_name,
                         tool_args,
                         session_id,
                     )
-                    if tool_result.get("snapshot_id"):
+                    # Attach pre-call snapshot to the result (overrides any
+                    # tool-supplied snapshot_id only when we created one).
+                    if snapshot_id_for_call:
+                        tool_result["snapshot_id"] = snapshot_id_for_call
+                        snapshot_ids.append(snapshot_id_for_call)
+                    elif tool_result.get("snapshot_id"):
                         snapshot_ids.append(tool_result["snapshot_id"])
 
                     output_str = str(tool_result.get("output") or "")

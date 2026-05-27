@@ -56,3 +56,20 @@ def tool_routing_decision(fn: Callable, args: dict) -> str:
     if fn.disruptive_fn(args):
         return "needs_confirmation"
     return "apply_immediately"
+
+
+def _autoload():
+    """Import all tool modules so @tool registrations land in `registry`.
+
+    Best-effort — if a module import fails (e.g., xbmc not available in
+    a test environment), that tool just won't be registered. The catch
+    is broad to keep `import lib.tools` working in any environment.
+    """
+    try:
+        from . import kodi_jsonrpc, http, kodi_addons, kodi_settings, kodi_files, verify, telegram_ask  # noqa: F401
+    except Exception:
+        # Tools that need Kodi runtime — import lazily at runtime via Kodi service
+        pass
+
+
+_autoload()
