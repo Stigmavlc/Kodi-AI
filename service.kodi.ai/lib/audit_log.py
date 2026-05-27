@@ -9,6 +9,16 @@ Schema:
     "redacted": list[str]  # JSONPath-style keys redacted in details
   }
 
+Concurrency model:
+- Intra-process: `_LOCK` (threading.Lock) serialises all writers in the
+  current Python interpreter.
+- Cross-process: `fcntl.flock(LOCK_EX)` around each open() append, so the
+  setup HTTP server's worker threads + the long-running service can't
+  interleave partial lines even under heavy churn. On non-POSIX platforms
+  `fcntl` is unavailable — degrade gracefully (intra-process lock still
+  applies; cross-process collisions are accepted there since this add-on
+  targets Android/Linux only).
+
 Spec: §5.3.
 """
 from __future__ import annotations
@@ -17,6 +27,13 @@ import os
 import threading
 from datetime import datetime, timezone
 from . import state_paths
+
+try:
+    import fcntl  # POSIX-only
+    _HAS_FCNTL = True
+except ImportError:  # pragma: no cover — Windows test hosts
+    fcntl = None  # type: ignore
+    _HAS_FCNTL = False
 
 _LOCK = threading.Lock()
 _ROTATION_BYTES = 10 * 1024 * 1024  # 10 MB
@@ -74,8 +91,17 @@ def write(
         os.makedirs(_audit_dir(), exist_ok=True)
         _rotate_if_needed()
         with open(_current_path(), "a", encoding="utf-8") as f:
-            f.write(line)
-            f.flush()
+            if _HAS_FCNTL:
+                # Block until we hold the exclusive lock across processes.
+                # Released implicitly when the file descriptor closes on
+                # exit from the `with` block.
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            try:
+                f.write(line)
+                f.flush()
+            finally:
+                if _HAS_FCNTL:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
 # ---- Higher-level helpers with built-in redaction ----
