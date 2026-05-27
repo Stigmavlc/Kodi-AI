@@ -2,7 +2,7 @@
 
 Actions:
   (none)        → status panel with action menu
-  setup_wizard  → 5-screen setup flow
+  setup_wizard  → 4-step setup flow
   show_secret   → QR PNG + setup_secret display
   reset_bot     → confirm + clear allowlist + generate new secret
 
@@ -252,60 +252,37 @@ def show_secret() -> None:
 
 
 def setup_wizard() -> None:
-    """5-screen guided setup: key → bot → pair → mode → done."""
+    """4-step guided setup: OpenRouter key → Telegram bot → pair → mode."""
     d = xbmcgui.Dialog()
-    TITLE = f"{ADDON_NAME}  ·  Setup Wizard"
+    TITLE = f"{ADDON_NAME}  ·  Setup"
 
-    # Welcome / overview
+    # Welcome — one brief screen, then straight into Step 1.
     if not d.yesno(
         TITLE,
-        f"{_h1('Welcome to ' + ADDON_NAME)}\n"
-        f"{_dim('AI-assisted Kodi diagnostics + auto-fix via Telegram')}\n"
-        f"{_HR}\n\n"
-        f"{_h2('What this wizard sets up:')}\n"
-        f"   {_BULLET} OpenRouter API key   {_dim('(LLM access)')}\n"
-        f"   {_BULLET} Telegram bot         {_dim('(notifications + chat)')}\n"
-        f"   {_BULLET} Pair your device     {_dim('(via QR or /start)')}\n"
-        f"   {_BULLET} Agent mode           {_dim('(auto / manual)')}\n"
-        f"\n{_dim('Takes ~2 minutes. Continue?')}",
-        yeslabel="Begin Setup",
+        f"{_h1('Set up Kodi-AI')}\n"
+        f"{_dim('4 quick steps. ~2 minutes.')}\n{_HR}\n\n"
+        f"   {_BULLET} OpenRouter API key  {_dim('(AI access)')}\n"
+        f"   {_BULLET} Telegram bot        {_dim('(notifications)')}\n"
+        f"   {_BULLET} Pair your phone\n"
+        f"   {_BULLET} Pick agent mode\n",
+        yeslabel="Begin",
         nolabel="Cancel",
     ):
         return
 
     # ──────────────────────────────────────────────────────────────────
-    # STEP 1 — OpenRouter (multi-screen for clarity)
+    # STEP 1 — OpenRouter (single screen, then input)
     # ──────────────────────────────────────────────────────────────────
-
-    # 1.0 — What's OpenRouter and why we need it
     d.ok(
         TITLE,
-        f"{_step(1, 5, 'OpenRouter API Key')}\n\n"
-        f"{_h2('What is OpenRouter?')}\n"
-        f"It's a [B]single gateway[/B] to all major AI models — GPT, Claude,\n"
-        f"Gemini, etc. One API key, one bill, you pick the model.\n\n"
-        f"{_h2('Why do we use it?')}\n"
-        f"   {_BULLET} Kodi-AI uses cheap models for triage ([B]~$0.0001[/B] per check)\n"
-        f"   {_BULLET} And a better model when actually fixing things\n"
-        f"   {_BULLET} You only pay for what you use — no subscription\n"
-        f"   {_BULLET} Typical month: [B]$1–5[/B] depending on how often Kodi breaks\n\n"
-        f"{_dim('Press OK to see how to get a key.')}",
-    )
-
-    # 1.1 — How to sign up + get the key + add credit
-    d.ok(
-        TITLE,
-        f"{_h1('Get your OpenRouter key')}\n{_HR}\n\n"
-        f"{_h2('On your phone or computer:')}\n\n"
-        f"  [B][COLOR {COLOR_ACCENT}]1.[/COLOR][/B]  Open [B]openrouter.ai[/B] in a browser\n\n"
-        f"  [B][COLOR {COLOR_ACCENT}]2.[/COLOR][/B]  Click [B]Sign in[/B] (top-right)\n"
-        f"      Use Google / GitHub / email — whatever's easiest\n\n"
-        f"  [B][COLOR {COLOR_ACCENT}]3.[/COLOR][/B]  Click your profile (top-right) → [B]Credits[/B]\n"
-        f"      Add [B]$5[/B] (covers months of use; Stripe / card)\n\n"
-        f"  [B][COLOR {COLOR_ACCENT}]4.[/COLOR][/B]  Click your profile → [B]Keys[/B]\n"
-        f"      Press [B]Create Key[/B], give it any name (e.g. \"Kodi\")\n"
-        f"      [B]Copy the key[/B] — looks like [COLOR {COLOR_ACCENT}]sk-or-v1-abc123...[/COLOR]\n\n"
-        f"  [B][COLOR {COLOR_OK}]5.[/COLOR][/B]  Press OK below and paste the key on the next screen.\n",
+        f"{_step(1, 4, 'OpenRouter API Key')}\n\n"
+        f"OpenRouter is a single gateway to GPT / Claude / Gemini.\n"
+        f"Typical cost: [B]$1–5/month[/B] for normal use.\n\n"
+        f"{_h2('On your phone:')}\n"
+        f"   {_BULLET} Open [B]openrouter.ai[/B] → Sign in\n"
+        f"   {_BULLET} Profile → [B]Credits[/B] → add [B]$5[/B]\n"
+        f"   {_BULLET} Profile → [B]Keys[/B] → [B]Create Key[/B] → copy it\n\n"
+        f"{_dim('Press OK to paste it.')}",
     )
     current_key = secrets.get_secret("openrouter_key") or ""
     new_key = d.input(
@@ -354,101 +331,18 @@ def setup_wizard() -> None:
             return
 
     # ──────────────────────────────────────────────────────────────────
-    # STEP 2 — Telegram bot (multi-screen, first-timer-friendly)
+    # STEP 2 — Telegram bot (single screen, then input)
     # ──────────────────────────────────────────────────────────────────
-
-    # 2.0 — Intro + branching for Telegram newcomers
     d.ok(
         TITLE,
-        f"{_step(2, 5, 'Telegram Bot')}\n\n"
-        f"Kodi-AI talks to you through [B]your own[/B] Telegram bot.\n"
-        f"You'll create the bot now — it takes about 1 minute.\n\n"
-        f"{_h2('Why a bot, not just a regular Telegram chat?')}\n"
-        f"   {_BULLET} Bots can be controlled by code (Kodi-AI talks AS the bot)\n"
-        f"   {_BULLET} The bot is [B]100% yours[/B] — only you have its token\n"
-        f"   {_BULLET} No central server, no shared accounts, no spam\n",
-    )
-
-    knows_telegram = d.yesno(
-        TITLE,
-        f"{_h2('Quick check:')}\n\n"
-        f"Have you used Telegram before, and is it installed on your phone?",
-        yeslabel="Yes, ready",
-        nolabel="No, help me",
-    )
-
-    # 2.1 — Install Telegram (only shown to first-timers)
-    if not knows_telegram:
-        d.ok(
-            TITLE,
-            f"{_h1('Install Telegram first')}\n{_HR}\n\n"
-            f"Telegram is a free messaging app (like WhatsApp). You need it\n"
-            f"to talk to your Kodi-AI bot.\n\n"
-            f"{_h2('Install on your phone:')}\n"
-            f"   {_BULLET} [B]iPhone:[/B] App Store → search [B]Telegram[/B] → install\n"
-            f"   {_BULLET} [B]Android:[/B] Play Store → search [B]Telegram[/B] → install\n"
-            f"   {_BULLET} [B]Desktop:[/B] [B]telegram.org[/B] (works too, but phone easier)\n\n"
-            f"{_h2('Once installed:')}\n"
-            f"   {_BULLET} Open Telegram\n"
-            f"   {_BULLET} Sign up with your phone number\n"
-            f"   {_BULLET} Press OK below when you're logged in",
-        )
-
-    # 2.2 — Find @BotFather
-    d.ok(
-        TITLE,
-        f"{_h1('Find @BotFather')}\n{_HR}\n\n"
-        f"[B]@BotFather[/B] is Telegram's official bot-maker. It's a special bot\n"
-        f"run by Telegram itself that lets anyone create their own bot.\n\n"
-        f"{_h2('Open @BotFather:')}\n"
-        f"   {_BULLET} In Telegram, tap the [B]search icon[/B] (top-right magnifier)\n"
-        f"   {_BULLET} Type [B]@BotFather[/B] (with the @ symbol)\n"
-        f"   {_BULLET} Tap the result with the [B]blue checkmark[/B] (official)\n"
-        f"   {_BULLET} Tap [B]Start[/B] (or send [B]/start[/B] if you've used it before)\n\n"
-        f"{_dim('You should see a welcome message from BotFather.')}",
-    )
-
-    # 2.3 — Create the bot (step-by-step with what BotFather will ask)
-    d.ok(
-        TITLE,
-        f"{_h1('Create your bot')}\n{_HR}\n\n"
-        f"{_h2('Send these to BotFather, one at a time:')}\n\n"
-        f"  [B][COLOR {COLOR_ACCENT}]1.[/COLOR][/B]  Send [B]/newbot[/B]\n"
-        f"      BotFather: [I]\"Alright, a new bot. How are we going to call it?\"[/I]\n\n"
-        f"  [B][COLOR {COLOR_ACCENT}]2.[/COLOR][/B]  Type a [B]display name[/B], anything you want:\n"
-        f"      e.g. [I]\"My Kodi Helper\"[/I] or [I]\"Shield Watcher\"[/I]\n"
-        f"      BotFather: [I]\"Good. Now let's choose a username...\"[/I]\n\n"
-        f"  [B][COLOR {COLOR_ACCENT}]3.[/COLOR][/B]  Type a [B]username[/B] — must be unique and end in [B]bot[/B]:\n"
-        f"      e.g. [I]\"ivan_kodi_helper_bot\"[/I] or [I]\"shieldwatcher_bot\"[/I]\n"
-        f"      If taken, BotFather will tell you — just try another name.\n\n"
-        f"  [B][COLOR {COLOR_ACCENT}]4.[/COLOR][/B]  BotFather replies with a long [B]TOKEN[/B] in the format:\n"
-        f"      [COLOR {COLOR_ACCENT}]<10-digit ID>[/COLOR][B]:[/B][COLOR {COLOR_ACCENT}]<35 random letters/digits/_-+>[/COLOR]\n\n"
-        f"  [B][COLOR {COLOR_OK}]5.[/COLOR][/B]  [B]Copy that whole token[/B] — you'll paste it on the next screen.\n",
-    )
-
-    # 2.4 — Privacy setting (critical for the bot to read your messages)
-    d.ok(
-        TITLE,
-        f"{_h1('Disable privacy mode (REQUIRED)')}\n{_HR}\n\n"
-        f"By default Telegram bots [B]can't read messages[/B] sent to them — a\n"
-        f"safety feature. We need to turn that off for [I]your[/I] bot so Kodi-AI\n"
-        f"can actually receive what you type.\n\n"
-        f"{_h2('In your @BotFather chat:')}\n"
-        f"   {_BULLET} Send [B]/setprivacy[/B]\n"
-        f"   {_BULLET} BotFather: [I]\"Choose a bot...\"[/I] → tap [B]your bot[/B]\n"
-        f"   {_BULLET} BotFather shows two options: tap [B]Disable[/B]\n"
-        f"   {_BULLET} Confirmation: [I]\"Success! ... will receive all messages.\"[/I]\n\n"
-        f"{_dim('Without this step, Kodi-AI cannot see your replies.')}",
-    )
-
-    # 2.5 — Input the token
-    d.ok(
-        TITLE,
-        f"{_h1('Paste the bot token')}\n{_HR}\n\n"
-        f"On the next screen, paste the long [B]token[/B] BotFather gave you.\n\n"
-        f"{_dim('Format reminder:')}\n"
-        f"   [COLOR {COLOR_ACCENT}]<10-digit ID>[/COLOR][B]:[/B][COLOR {COLOR_ACCENT}]<35-char secret>[/COLOR]\n\n"
-        f"{_dim('(digits, colon, then a 35-character letters+digits+_-+ string)')}",
+        f"{_step(2, 4, 'Telegram Bot')}\n\n"
+        f"You'll create [B]your own[/B] Telegram bot — Kodi-AI talks through it.\n\n"
+        f"{_h2('In Telegram, message [B]@BotFather[/B]:')}\n"
+        f"   {_BULLET} Send [B]/newbot[/B] → pick a name + username (must end in [B]bot[/B])\n"
+        f"   {_BULLET} Copy the [B]token[/B] BotFather sends back ([I]digits:letters[/I])\n"
+        f"   {_BULLET} Send [B]/setprivacy[/B] → pick your bot → [B]Disable[/B] {_dim('(REQUIRED)')}\n\n"
+        f"{_dim('No Telegram? Install it free from your app store first.')}\n"
+        f"{_dim('Press OK to paste the token.')}",
     )
     bot_token = d.input(
         "Telegram bot_token  (paste from BotFather)",
@@ -489,23 +383,14 @@ def setup_wizard() -> None:
     # ──────────────────────────────────────────────────────────────────
     # STEP 3 — Pair
     # ──────────────────────────────────────────────────────────────────
-    setup_secret = tg_auth.generate_setup_secret()
-    d.ok(
-        TITLE,
-        f"{_step(3, 5, 'Pair your phone')}\n\n"
-        f"On the next screen you'll see a [B]QR code[/B] and a [B]setup secret[/B].\n\n"
-        f"{_h2('To pair:')}\n"
-        f"   {_BULLET} Scan the QR with your phone's camera, OR\n"
-        f"   {_BULLET} Open your bot in Telegram and send:\n"
-        f"     [B][COLOR {COLOR_ACCENT}]/start {setup_secret}[/COLOR][/B]\n\n"
-        f"{_dim('After pairing, only your account can talk to the bot.')}",
-    )
-    show_secret()
+    tg_auth.generate_setup_secret()  # ensure secret exists; show_secret() reads it
+    show_secret()  # displays QR + deeplink + /start command in one screen
+    setup_secret = tg_auth.current_setup_secret() or ""
     if d.yesno(
         TITLE,
-        f"{_h2('Waiting for pairing...')}\n\n"
+        f"{_step(3, 4, 'Pair your phone')}\n\n"
         f"Have you sent [B]/start {setup_secret}[/B] to your bot?\n\n"
-        f"{_dim('Click Yes to wait up to 60s for confirmation, or Skip to do this later.')}",
+        f"{_dim('Yes → wait up to 60s for pairing.  Skip → pair later from the menu.')}",
         yeslabel="I have sent it",
         nolabel="Skip for now",
     ):
@@ -532,24 +417,13 @@ def setup_wizard() -> None:
             )
 
     # ──────────────────────────────────────────────────────────────────
-    # STEP 4 — Mode
+    # STEP 4 — Mode (single select, no intro screen)
     # ──────────────────────────────────────────────────────────────────
-    d.ok(
-        TITLE,
-        f"{_step(4, 5, 'Agent Mode')}\n\n"
-        f"How should the agent handle fixes?\n\n"
-        f"{_h2('Auto')} {_dim('(recommended)')}\n"
-        f"   Safe fixes apply automatically, you get a Telegram\n"
-        f"   summary. Risky ones still ask first.\n\n"
-        f"{_h2('Manual')}\n"
-        f"   Every fix requires Yes/No confirmation in Telegram\n"
-        f"   before applying.\n",
-    )
     mode_choice = d.select(
-        f"{ADDON_NAME}  ·  Choose mode",
+        f"Step 4 of 4  —  How should the agent apply fixes?",
         [
-            "Auto      —  apply safe fixes automatically (recommended)",
-            "Manual    —  confirm every fix in Telegram",
+            "Auto      —  apply safe fixes automatically  (recommended)",
+            "Manual    —  ask via Telegram before every fix",
         ],
     )
     if mode_choice == 0:
@@ -568,15 +442,11 @@ def setup_wizard() -> None:
     )
     d.ok(
         TITLE,
-        f"{_step(5, 5, 'All set')}\n\n"
-        f"[COLOR {COLOR_OK}][B]✓ Setup complete![/B][/COLOR]\n\n"
-        f"{_h2('Summary:')}\n"
-        f"   {_BULLET} OpenRouter:   [COLOR {COLOR_OK}]configured[/COLOR]\n"
-        f"   {_BULLET} Telegram:     [B]@{settings.get_string('bot_username') or '?'}[/B]   {pair_status}\n"
-        f"   {_BULLET} Mode:         [B]{settings.get_string('mode') or 'auto'}[/B]\n\n"
-        f"{_HR}\n"
-        f"{_dim('Kodi-AI will now monitor your Kodi logs. Restart Kodi to')}\n"
-        f"{_dim('start the service immediately, or it will start on next launch.')}",
+        f"[COLOR {COLOR_OK}][B]✓ Setup complete[/B][/COLOR]\n{_HR}\n\n"
+        f"   {_BULLET} OpenRouter:  [COLOR {COLOR_OK}]configured[/COLOR]\n"
+        f"   {_BULLET} Telegram:    [B]@{settings.get_string('bot_username') or '?'}[/B]   {pair_status}\n"
+        f"   {_BULLET} Mode:        [B]{settings.get_string('mode') or 'auto'}[/B]\n\n"
+        f"{_dim('Restart Kodi to start the service now, or it will start on next launch.')}",
     )
 
 
