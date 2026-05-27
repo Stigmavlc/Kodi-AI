@@ -157,3 +157,88 @@ def has_pending_logincident() -> bool:
     except Exception:
         return False
     return False
+
+
+# ---- MonotonicBudget — wall-clock cap with pause/resume across ask_user ----
+from enum import Enum, auto
+import time
+
+
+class BudgetStateError(RuntimeError):
+    """Illegal MonotonicBudget state transition."""
+
+
+class BudgetState(Enum):
+    IDLE = auto()
+    RUNNING = auto()
+    PAUSED = auto()
+
+
+class MonotonicBudget:
+    """Wall-clock budget that pauses across ask_user.
+
+    Only PAUSED state is ever persisted (only RUNNING crashes lose the session).
+    On rehydrate, restored as PAUSED with elapsed_baseline preserved;
+    .resume() reads time.monotonic() fresh.
+
+    Spec: §1.8.
+    """
+    def __init__(self, limit_s: float):
+        self.limit_s = limit_s
+        self.elapsed_baseline = 0.0
+        self.state = BudgetState.IDLE
+        self.started_at: float | None = None
+
+    def start(self) -> None:
+        if self.state != BudgetState.IDLE:
+            raise BudgetStateError(f"start: state is {self.state.name}, expected IDLE")
+        self.state = BudgetState.RUNNING
+        self.started_at = time.monotonic()
+
+    def pause(self) -> None:
+        if self.state != BudgetState.RUNNING:
+            raise BudgetStateError(f"pause: state is {self.state.name}, expected RUNNING")
+        assert self.started_at is not None
+        self.elapsed_baseline += time.monotonic() - self.started_at
+        self.started_at = None
+        self.state = BudgetState.PAUSED
+
+    def resume(self) -> None:
+        if self.state != BudgetState.PAUSED:
+            raise BudgetStateError(f"resume: state is {self.state.name}, expected PAUSED")
+        self.started_at = time.monotonic()
+        self.state = BudgetState.RUNNING
+
+    def stop(self) -> None:
+        if self.state != BudgetState.RUNNING:
+            raise BudgetStateError(f"stop: state is {self.state.name}, expected RUNNING")
+        assert self.started_at is not None
+        self.elapsed_baseline += time.monotonic() - self.started_at
+        self.started_at = None
+        self.state = BudgetState.IDLE
+
+    def elapsed(self) -> float:
+        if self.state == BudgetState.RUNNING:
+            assert self.started_at is not None
+            return self.elapsed_baseline + (time.monotonic() - self.started_at)
+        return self.elapsed_baseline
+
+    def exceeded(self) -> bool:
+        return self.elapsed() >= self.limit_s
+
+    def to_dict(self) -> dict:
+        """Serialize for disk persistence (only PAUSED state persisted in practice)."""
+        return {
+            "limit_s": self.limit_s,
+            "elapsed_baseline": self.elapsed_baseline,
+            "state": self.state.name,
+        }
+
+    @classmethod
+    def from_dict(cls, blob: dict) -> "MonotonicBudget":
+        """Rehydrate from disk. state typically PAUSED."""
+        b = cls(limit_s=blob["limit_s"])
+        b.elapsed_baseline = blob["elapsed_baseline"]
+        b.state = BudgetState[blob["state"]]
+        # started_at intentionally None on rehydrate — resume() will set it.
+        return b
