@@ -120,6 +120,11 @@ class TelegramBot:
                         return
                     continue
                 backoff = 1.0
+                try:
+                    from .. import health as _health
+                    _health.record_telegram_rt_ok()
+                except Exception:
+                    pass
                 for upd in r.json().get("result", []):
                     self._offset = max(self._offset, upd["update_id"] + 1)
                     try:
