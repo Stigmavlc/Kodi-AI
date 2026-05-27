@@ -36,6 +36,12 @@ _LINE_RE = re.compile(
 PER_TICK_CAP = 1_048_576  # 1 MB
 IDLE_TICKS_THRESHOLD = 40  # ~30s @ 750ms
 
+BURST_QUEUE_THRESHOLD = int(0.8 * 500)  # 80% of work_queue maxsize
+BURST_LAG_TICKS = 2
+BOOT_SCAN_CHUNK = 256 * 1024  # 256 KB backward chunks
+BOOT_SCAN_MAX_BYTES_LARGE_FILE = 2 * 1024 * 1024
+LARGE_FILE_THRESHOLD = 50 * 1024 * 1024
+
 
 class LogWatcher:
     def __init__(self, *, poll_active_ms: int = 750, poll_idle_ms: int = 2500,
@@ -57,6 +63,10 @@ class LogWatcher:
         # tuple: (ts, raw_line, addon, level, body)
         self._window_buffer_bytes = 0
         self._was_active_last_tick = False
+        # Burst-mode tracking (Task 4.7-REVISED)
+        self._lag_streak = 0
+        self._last_error_cluster_id: str | None = None
+        self._last_error_addon: str | None = None
 
     def _peek_first_line(self, path: str) -> str | None:
         try:
@@ -266,6 +276,167 @@ class LogWatcher:
                 pass
         # Per-tool-boundary buffer eval runs every tick (spec §1.3)
         self._evaluate_buffer_post_window()
+
+    def _maybe_enter_burst_mode_and_read(self) -> bool:
+        """If queue >=80% full AND lag growing 2 ticks -> skip-to-tail.
+        Returns True if burst mode entered."""
+        qsize = work_queue.qsize()
+        if qsize >= BURST_QUEUE_THRESHOLD:
+            self._lag_streak += 1
+        else:
+            self._lag_streak = 0
+            return False
+        if self._lag_streak < BURST_LAG_TICKS:
+            return False
+        # Burst mode: read last 1MB, count ERRORs by addon in skipped region
+        path = state_paths.log_path()
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            return False
+        skipped_start = self._last_offset
+        skipped_end = max(self._last_offset, size - PER_TICK_CAP)
+        # Count ERRORs across the full burst region (skipped + tail-to-read) so
+        # the synthetic incident reflects the entire burst window, not just the
+        # lost portion. The "X MB skipped" message still refers to the skipped
+        # bytes only — counts span the whole burst for operator usefulness.
+        counts: dict[str, int] = {}
+        if size > skipped_start:
+            with open(path, "rb") as f:
+                f.seek(skipped_start)
+                buf = b""
+                remaining = size - skipped_start
+                while remaining > 0:
+                    chunk = f.read(min(64 * 1024, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+                    buf += chunk
+                    while b"\n" in buf:
+                        line_b, _, buf = buf.partition(b"\n")
+                        line = line_b.decode("utf-8", errors="replace")
+                        parsed = self._parse_line(line)
+                        if parsed and parsed[0] in ("ERROR", "FATAL"):
+                            addon = parsed[1] or "<unknown>"
+                            counts[addon] = counts.get(addon, 0) + 1
+        # Read tail 1MB and ingest normally
+        self._last_offset = max(skipped_end, self._last_offset)
+        skip_mb = (skipped_end - skipped_start) / (1024 * 1024)
+        synth = (
+            f"log burst, {skip_mb:.1f} MB skipped; counts: "
+            + ", ".join(f"{k}: {v} ERR" for k, v in counts.items())
+        )
+        try:
+            now = datetime.now(timezone.utc)
+            enqueue(LogIncident(
+                cluster_id=f"burst_{int(now.timestamp())}",
+                first_seen=now, last_seen=now, occurrences=1,
+                raw_lines=[synth], severity_hint="ERROR",
+                likely_addon=None, likely_action=None, backdated=False,
+                from_previous_session=False, triage_deferred=True,
+            ))
+        except Exception:
+            drop_counter.inc()
+        # Resume normal read
+        chunk = self._read_new_bytes()
+        if chunk:
+            self._ingest_chunk(chunk)
+        return True
+
+    def boot_post_mortem(self) -> None:
+        """Scan kodi.old.log backward for sentinel boundaries + emit backdated
+        incidents (per spec §1.4). Skip if file absent or fresh first boot.
+        Uses per-session state machine (round-2 fix H7) for dangling-session
+        suppression."""
+        from . import log_sentinels
+        path = state_paths.old_log_path()
+        if not os.path.exists(path):
+            return  # No kodi.old.log -> fresh first boot, nothing to scan
+        size = os.path.getsize(path)
+        cap = BOOT_SCAN_MAX_BYTES_LARGE_FILE if size >= LARGE_FILE_THRESHOLD else size
+        # Read backward in chunks until first sentinel boundary found OR cap reached
+        read_so_far = 0
+        chunks: list[bytes] = []
+        with open(path, "rb") as f:
+            pos = size
+            while read_so_far < cap and pos > 0:
+                chunk_size = min(BOOT_SCAN_CHUNK, pos, cap - read_so_far)
+                pos -= chunk_size
+                f.seek(pos)
+                chunks.append(f.read(chunk_size))
+                read_so_far += chunk_size
+                if b"[service.kodi.ai] reason-" in chunks[-1]:
+                    break
+        chunks.reverse()
+        tail = b"".join(chunks).decode("utf-8", errors="replace")
+        lines = tail.splitlines()
+        # Build open_sessions set from tail (sessions started without end)
+        open_sessions: set[str] = set()
+        for line in lines:
+            s = log_sentinels.parse_sentinel(line)
+            if s is None:
+                continue
+            kind, sid = s
+            if kind == "start":
+                open_sessions.add(sid)
+            elif kind == "end":
+                open_sessions.discard(sid)
+        # Per-session state machine (4.7-REVISED H7 fix)
+        suppress_lines: set[int] = set()
+        currently_open: set[str] = set()
+        # Load tool_history signatures from sessions/*.json for tool-history-match
+        tool_history_signatures: set[str] = set()
+        try:
+            from . import reasoner_state
+            for sid in reasoner_state.list_all():
+                st = reasoner_state.load(sid)
+                if st is None:
+                    continue
+                for tool_entry in (getattr(st, "tool_history", None) or []):
+                    sig = tool_entry.get("output_signature") if isinstance(tool_entry, dict) else None
+                    if sig:
+                        tool_history_signatures.add(sig)
+        except Exception:
+            pass  # reasoner_state not yet implemented (Task 5.2)
+        for i, line in enumerate(lines):
+            s = log_sentinels.parse_sentinel(line)
+            if s:
+                kind, sid = s
+                if kind == "start" and sid in open_sessions:
+                    currently_open.add(sid)
+                elif kind == "end":
+                    currently_open.discard(sid)
+                continue
+            # Suppress this line ONLY IF inside an open session AND
+            # (addon-prefix is ours OR signature matches a recorded tool call)
+            if currently_open:
+                if "[service.kodi.ai]" in line:
+                    suppress_lines.add(i)
+                else:
+                    sig = prefilter.cluster_id_for(line)
+                    if sig in tool_history_signatures:
+                        suppress_lines.add(i)
+        # Emit non-suppressed ERROR/FATAL lines as backdated incidents
+        for i, line in enumerate(lines):
+            if i in suppress_lines:
+                continue
+            parsed = self._parse_line(line)
+            if not parsed or parsed[0] not in ("ERROR", "FATAL", "SEVERE"):
+                continue
+            level, addon, body = parsed
+            if prefilter.is_benign(body):
+                continue
+            cid = prefilter.cluster_id_for(body)
+            now = datetime.now(timezone.utc)
+            try:
+                enqueue(LogIncident(
+                    cluster_id=cid, first_seen=now, last_seen=now, occurrences=1,
+                    raw_lines=[line], severity_hint=level, likely_addon=addon,
+                    likely_action=None, backdated=True,
+                    from_previous_session=True, triage_deferred=True,
+                ))
+            except Exception:
+                drop_counter.inc()
 
     def run(self) -> None:
         # Wait for service to finish startup before tailing

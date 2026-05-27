@@ -62,6 +62,15 @@ class LogIncident:
     from_previous_session: bool
     triage_deferred: bool
 
+    def __lt__(self, other):
+        # Defensive: heap tie-break via (prio, seq) normally avoids payload
+        # compare, but if seqs ever collide (e.g. test code pre-stages items
+        # with hardcoded literals that clash with module-global next(_seq)),
+        # falling through here would raise TypeError. Returning NotImplemented
+        # would do the same. We return False so heap operations remain valid
+        # in collision corner-cases (stable, arbitrary tie).
+        return False
+
 
 @dataclass(frozen=True, order=False)
 class UserMsg:
@@ -70,11 +79,17 @@ class UserMsg:
     message_id: int
     reply_to_message_id: int | None
 
+    def __lt__(self, other):
+        return False
+
 
 @dataclass(frozen=True, order=False)
 class ResumeWork:
     session_id: str
     user_reply: Any  # str | bool — see spec §1.7
+
+    def __lt__(self, other):
+        return False
 
 
 WorkItem = LogIncident | UserMsg | ResumeWork
