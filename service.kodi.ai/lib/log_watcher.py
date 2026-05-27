@@ -341,6 +341,9 @@ class LogWatcher:
         chunk = self._read_new_bytes()
         if chunk:
             self._ingest_chunk(chunk)
+        # Reset lag streak so burst-mode is a one-shot relief, not per-tick repeater.
+        # Spec §1.4: "Resume normal polling next tick".
+        self._lag_streak = 0
         return True
 
     def boot_post_mortem(self) -> None:
@@ -351,7 +354,14 @@ class LogWatcher:
         from . import log_sentinels
         path = state_paths.old_log_path()
         if not os.path.exists(path):
-            return  # No kodi.old.log -> fresh first boot, nothing to scan
+            # Spec §1.4: log INFO when kodi.old.log absent (fresh first boot).
+            try:
+                import xbmc
+                xbmc.log("[service.kodi.ai] boot_post_mortem: kodi.old.log absent, skipping",
+                         xbmc.LOGINFO)
+            except Exception:
+                pass  # xbmc not available in non-Kodi environments
+            return
         size = os.path.getsize(path)
         cap = BOOT_SCAN_MAX_BYTES_LARGE_FILE if size >= LARGE_FILE_THRESHOLD else size
         # Read backward in chunks until first sentinel boundary found OR cap reached
@@ -443,9 +453,13 @@ class LogWatcher:
         from .concurrency import startup_complete_event
         startup_complete_event.wait()
         while not abort_event.is_set():
-            chunk = self._read_new_bytes()
-            if chunk:
-                self._ingest_chunk(chunk)
+            # Burst-mode check first (spec §1.4): if queue >=80% full and
+            # lag-streak threshold reached, skip-to-tail + emit synthetic.
+            # Burst path handles its own read+ingest internally.
+            if not self._maybe_enter_burst_mode_and_read():
+                chunk = self._read_new_bytes()
+                if chunk:
+                    self._ingest_chunk(chunk)
             self._close_expired_clusters()  # also runs buffer eval (spec §1.3)
             cadence_ms = self._current_cadence_ms()
             if abort_event.wait(cadence_ms / 1000.0):
