@@ -1,9 +1,9 @@
 # Kodi-AI V1 — Session Handover
 
-**Last updated:** 2026-05-27 (in-session: Phases 1-3 COMPLETE + Tasks 4.1-4.4 done, reviewer-vetted)
+**Last updated:** 2026-05-27 (in-session: Phases 1-3 COMPLETE + Tasks 4.1-4.5 done, reviewer-vetted)
 **Project root:** `/Users/ivan/Desktop/Web Development  Projects/Completed By Me/Kodi-AI/`
 **Git branch:** `main`
-**Latest commit:** `7c6ae8e` (feat(log_watcher): T2 core poll loop + parse + enqueue)
+**Latest commit:** `1c420d1` (feat(log_watcher): 3-signal rotation + 1MB cap + adaptive cadence)
 
 This document tracks **exactly what's left to implement**, by phase and by task, so any future session can pick up cleanly. It is read by the `/load-context` slash command at session start and updated by `/save-context` at session end.
 
@@ -85,7 +85,7 @@ Per task, the plan's own task ID maps to a line range in `docs/superpowers/plans
 | 4.2 `lib/log_sentinels.py` (LOGINFO audit sentinels + parse_sentinel) | ✅ done | `9512369`. Spec §1.3, §5.6. Plan-locked test data (`xyz789`) required regex broadening from `[a-f0-9]+` → `[a-z0-9]+` (plan defect — see §4 #71). Test re-bind 8th file. 104/104 unit tests pass. Both reviewers CLEAN. |
 | 4.3 `lib/prefilter.py` (signature normalization + benign allowlist) | ✅ done | `af8c30b`. Spec §1.4. Plan-verbatim, ZERO deviations. 112/112 unit tests pass. Both reviewers CLEAN. |
 | 4.4 `lib/log_watcher.py` core (poll/parse/cluster/enqueue) | ✅ done | `7c6ae8e`. Spec §1.4, §3.1. Plan-verbatim, ZERO deviations. 112 unit + 1 integration test pass. First `@pytest.mark.integration` test (~5s). Both reviewers CLEAN. |
-| 4.5 log_watcher 3-signal rotation + 1MB cap + adaptive cadence | ⏸ pending | Spec §1.4 |
+| 4.5 log_watcher 3-signal rotation + 1MB cap + adaptive cadence | ✅ done | `1c420d1`. Spec §1.4. ONE justified deviation: moved `_ticks_since_growth` bookkeeping from `run()` into `_read_new_bytes()` to satisfy plan-locked test that calls `_read_new_bytes()` directly. 4 integration + 112 unit tests pass in isolation. Both reviewers CLEAN. Pre-existing test pollution between suites confirmed (see §4 #77). |
 | **4.6-REVISED** log_watcher buffer-and-evaluate per-tool-boundary | ⏸ pending | Spec §1.3, §1.5. **Round-1 plan-review fix C5.** Supersedes original 4.6. Requires `ActiveCalls.last_window_targets()` from Task 1.5. |
 | **4.7-REVISED** log_watcher boot post-mortem per-session state machine + tool-history-match | ⏸ pending | Spec §1.4. **Round-1 plan-review fix H7 + round-2 fix.** Requires `tool_history[].output_signature` from Task 5.4-AMENDMENT. |
 
@@ -326,6 +326,10 @@ These are issues caught by reviewers during Phase 0 that are NOT yet fixed and s
 75. **`log_watcher.active_cluster_ids` never cleaned up — grows unbounded** (Task 4.4 code review, forward-looking): T4 lifecycle cleanup not implemented (plan doesn't specify). Risk surfaces when (a) cluster_id collisions across days/sessions, or (b) Task 4.5+ integration tests share cluster_ids. Add T4 cleanup hook at Task 10.2 wiring.
 
 76. **`set_startup_complete` autouse fixture leaks `active_cluster_ids` between integration tests** (Task 4.4 code review): comment in fixture says "Don't clear — other tests may run after" but only refers to startup_complete_event. Future integration tests may collide on cluster_id. Add explicit `active_cluster_ids.clear()` in next integration-test-adding task OR widen `reset_fake_fs` fixture to clear concurrency state.
+
+77. **🔧 PRE-EXISTING TEST POLLUTION: unit-then-integration ordering breaks `state_paths.xbmcvfs` binding** (Task 4.5 verified by reverting to `7c6ae8e`): when `pytest` runs unit tests BEFORE integration tests in the same invocation, integration tests fail because `state_paths.xbmcvfs` is bound to a unit-test `MagicMock` (via the test re-bind pattern documented in §15). monkeypatch teardown doesn't restore the original because `state_paths` module is already imported and cached. Effect: `pytest --no-cov` (full suite) shows 3+ integration failures, but each suite passes when run in isolation. Pre-commit hook runs them separately so commits succeed. **Action: add a unit-test teardown that resets `state_paths.xbmcvfs` to the original `xbmcvfs` module reference**, OR have integration `conftest.py`'s `reset_fake_fs` fixture also re-bind `state_paths.xbmcvfs` to the integration fake (more robust). Implement at Task 11.1 startup smoke tests OR sooner if more cross-suite failures surface.
+
+78. **`log_watcher` rotation Signal 2 (inode) + Signal 3 (first-line ts) lack dedicated unit tests** (Task 4.5 code review, plan-locked): only Signal 1 (size shrink) directly tested. Signals 2 + 3 exercised only via rotation-recovery path. Plan-locked test set; consider adding hardening tests in a future task.
 
 ---
 
