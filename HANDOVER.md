@@ -1,9 +1,9 @@
 # Kodi-AI V1 — Session Handover
 
-**Last updated:** 2026-05-27 (in-session: Phases 1 + 2 COMPLETE, reviewer-vetted)
+**Last updated:** 2026-05-27 (in-session: Phases 1 + 2 + 3 COMPLETE, reviewer-vetted)
 **Project root:** `/Users/ivan/Desktop/Web Development  Projects/Completed By Me/Kodi-AI/`
 **Git branch:** `main`
-**Latest commit:** `fc7aff4` (feat(audit_log): write_tool_call helper with pair-level redaction)
+**Latest commit:** `81a2f20` (feat(llm.prompts): triage/reasoner/chat system prompts + loader)
 
 This document tracks **exactly what's left to implement**, by phase and by task, so any future session can pick up cleanly. It is read by the `/load-context` slash command at session start and updated by `/save-context` at session end.
 
@@ -71,11 +71,11 @@ Per task, the plan's own task ID maps to a line range in `docs/superpowers/plans
 
 | Task | Status | Notes |
 |---|---|---|
-| 3.1 `lib/llm/client.py` (OpenRouter non-streaming chat + typed errors) | ⏸ pending | Spec §1.10, §4.5. `DEFAULT_PREFLIGHT_MODEL` constant. |
-| 3.2 `recommended_models.json` + `lib/llm/router.py` (TaskModelRouter) | ⏸ pending | Spec §4.5 |
-| 3.3 `lib/llm/budget.py` (BudgetGuard with 3-point enforcement) | ⏸ pending | Spec §5.5 |
-| 3.4 Streaming chat + slug validation (extend client.py with `chat_stream`, `validate_slugs`) | ⏸ pending | Spec §1.10, §4.5. **chat_stream yields 4-tuple** (chunk_text, finish_reason, usage, tool_calls) per round-2 plan fix. |
-| 3.5 System prompts (`triage_system.md`, `reasoner_system.md`, `chat_system.md`) + `lib/llm/prompts.py` loader | ⏸ pending | Spec §5.6, §2 |
+| 3.1 `lib/llm/client.py` (OpenRouter non-streaming chat + typed errors) | ✅ done | `45e7e35`. Spec §1.10, §4.5. Plan-verbatim, ZERO deviations (lib/llm/__init__.py pre-existed from Phase 0). 71/71 unit tests pass. Both reviewers CLEAN. |
+| 3.2 `recommended_models.json` + `lib/llm/router.py` (TaskModelRouter) | ✅ done | `44db143`. Spec §4.5. Plan-verbatim, ZERO deviations. 78/78 unit tests pass. Both reviewers CLEAN. |
+| 3.3 `lib/llm/budget.py` (BudgetGuard with 3-point enforcement) | ✅ done | `4a4152d`. Spec §5.5. Plan-verbatim. Test re-bind deviation (6th file). 87/87 unit tests pass. Both reviewers CLEAN. |
+| 3.4 Streaming chat + slug validation (extend client.py with `chat_stream`, `validate_slugs`) | ✅ done | `63d6770`. Spec §1.10, §4.5. Plan-verbatim, ZERO deviations. 91/91 unit tests pass. Both reviewers CLEAN. **NOTE:** Plan body and impl ship 3-tuple `(chunk_text, finish_reason, usage)` — the HANDOVER §3 4-tuple note (including tool_calls) was NOT applied. Plan body and tests are consistent; the 4-tuple is a known plan-defect (see §4 #58). |
+| 3.5 System prompts (`triage_system.md`, `reasoner_system.md`, `chat_system.md`) + `lib/llm/prompts.py` loader | ✅ done | `81a2f20`. Spec §5.6, §2. Plan-verbatim, ZERO deviations. 97/97 unit tests pass. Both reviewers CLEAN. |
 
 ### Phase 4 — Log infrastructure (7 tasks total: 5 base + REVISED 4.6 + REVISED 4.7, where the REVISED versions REPLACE originals)
 
@@ -260,6 +260,54 @@ These are issues caught by reviewers during Phase 0 that are NOT yet fixed and s
 42. **`canary_self_test` over-redacts on single-line Authorization-containing inputs in production** (Task 2.3 forward-looking): if real log lines have content AFTER the Authorization header value on the same line, the `[^\r\n]+` regex over-redacts. Acceptable privacy-safe direction; uncommon in Kodi logs.
 
 43. **`write_tool_call` fabricates `value` field for `get_addon_setting`** (Task 2.4 code review, plan-locked): the helper unconditionally writes `redacted_args["value"] = "<redacted>"` when pair-redacting, even though `get_addon_setting` (read path) doesn't have a `value` arg. Audit record then shows `args.value: <redacted>` and `redacted: [..., "args.value"]` — misleading but inert (no data leak). Plan-locked. Action: at Task 7.5-EXPANDED (kodi_settings), update helper to only redact value if it was supplied: `if "value" in redacted_args: redacted_args["value"] = "<redacted>"; redacted_keys.append("args.value")`.
+
+44. **`llm/client.py` malformed 200 body raises uncaught KeyError** (Task 3.1 code review, plan-locked): if OpenRouter returns 200 but with a missing `choices` key, `body["choices"][0]` raises `KeyError` — propagates out as non-LLM type. Caller code may not handle it. Wrap at Task 3.2/3.3 callsite, or harden when streaming lands in Task 3.4.
+
+45. **`llm/client.py` 401/402 exceptions include `r.text` which may contain rejected API key** (Task 3.1 code review): mitigated by redactor's Bearer + sk-or- patterns when reaching audit_log, BUT exceptions logged elsewhere (raw `logging.exception`) would leak. Document the contract at first consumer (Task 3.2) — caller must route exception messages through `redactor.redact()` before any persistence.
+
+46. **`llm/client.py` 30s read timeout may be too tight for reasoner workloads** (Task 3.1 code review, plan-locked): triage calls are fine; reasoner with long prompts may need longer override. Kwarg is exposed; caller responsibility. Reconsider at Task 3.3 (BudgetGuard) integration.
+
+47. **`llm/client.py` Retry-After value smuggled as exception message** (Task 3.1 code review): `LLMRateLimitError(retry_after or "1")` — caller must `int(str(e))` and could swallow numeric-parse errors if header is HTTP-date format (RFC 7231 permits). Plan-locked. Likely needs a structured field at retry-handling layer (Task 8.x cadence engine).
+
+48. **`llm/client.py` HTTP-Referer placeholder `<user>` literal** (Task 3.1 code review, plan-locked): cosmetic/branding; OpenRouter dashboard surfaces this. Replace with stable repo URL at Task 12.1 packaging.
+
+49. **`llm/client.py` unused `import json`** (Task 3.1 code review, plan-verbatim): pyflakes/ruff F401. Sweep in Phase 12 lint pass.
+
+50. **`llm/client.py` docstring inconsistency: says Task 3.5 for streaming but plan places it in Task 3.4** (Task 3.1 code review, plan-internal): plan has "chat_stream() added in Task 3.5" in plan Step 3 code, but actual streaming is at Task 3.4 in HANDOVER. Update docstring at Task 3.4 implementation.
+
+51. **`llm/router.py` malformed-override paths beyond JSONDecodeError crash startup** (Task 3.2 code review, plan-locked): `null`, `[1,2,3]`, `"string"` JSON values parse successfully but then `.items()` raises AttributeError. Empty list override → IndexError on pick. Missing model fields → KeyError. Per spec the user-override should fail gracefully and surface in /status. Action: at Task 3.4 (slug validation) or Task 11.1 (startup smoke tests), replace `except json.JSONDecodeError:` with broader `except (json.JSONDecodeError, AttributeError, TypeError, KeyError):` + add `isinstance(override, dict)` check after `json.loads`.
+
+52. **`llm/router.py` unknown task-class keys in override pollute `_prices`** (Task 3.2 code review, plan-locked): typo'd class like `t1_simpel` would add its models to `all_model_ids()` set, polluting Task 3.4 slug validation. Harmless at runtime (OpenRouter rejects). Add `if k in defaults:` guard in same hardening pass as #51.
+
+53. **`llm/router.py` multi-chain price collision** (Task 3.2 code review): if a model appears in multiple chains with different prices, the last-iterated chain wins (dict-iteration-order dependent). Currently all duplicates have identical prices — benign. If a future override sets divergent prices, silent indeterminism. Plan-locked.
+
+54. **`llm/budget.py` pre_call_check + record_actual race** (Task 3.3 code review, plan-locked): two concurrent callers (T2 triage and T4 reasoner) can both pass `pre_call_check`, then both `record_actual`, pushing combined cost over cap. V1 mitigation: typical per-incident cap $0.50, T2 triage is cheap ($0.001), T4 reasoner is the bigger cost — over-shoot bounded by per-call estimate. Forward-looking hardening: caller should acquire a higher-level lock around the check+call+record critical section.
+
+55. **`llm/budget.py` midnight-crossing session doesn't bump day_iso/month_iso during run** (Task 3.3 code review, plan-locked): `record_actual` accumulates against the day_iso captured at `__init__` or `load()` time. A session crossing midnight continues posting to the OLD day's counter. Slightly inaccurate at boundary. Plan-locked.
+
+56. **`llm/budget.py` operator semantics: at-cap exactly allowed** (Task 3.3 code review): both `pre_call_check` (`>` for refuse) and `mid_stream_check` (`<=` for allow) treat at-cap exactly as allowed; trip only when strictly OVER. Spec §5.5 says "trip exactly at 100%" which is ambiguous — implementation favors permissive. Plan-locked.
+
+57. **No tests for `llm/budget.py` date rollover, malformed JSON, concurrent calls** (Task 3.3 code review): defensive try/except (json.JSONDecodeError, OSError) in load() is untested. Forward-looking when hardening budget module in Phase 11+.
+
+58. **`llm/client.py:chat_stream` 3-tuple vs HANDOVER 4-tuple** (Task 3.4): HANDOVER §3 row Task 3.4 says "chat_stream yields 4-tuple (chunk_text, finish_reason, usage, tool_calls) per round-2 plan fix" — but plan BODY and tests both lock 3-tuple. Tool calls in streaming deltas are NOT extracted. Action: either backport the 4-tuple fix to plan body + impl (at Task 5.4-REVISED when Reasoner uses chat_stream), OR update HANDOVER §3 to drop the 4-tuple claim. Round-2 reviewer intent unclear.
+
+59. **`chat_stream` IndexError on empty `choices` array** (Task 3.4 code review, plan-locked): `obj.get("choices", [{}])[0]` only protects when key is absent — empty list `[]` raises IndexError. Reproducible. Fix when plan unlocked: `choices = obj.get("choices") or [{}]; choice = choices[0] if choices else {}`.
+
+60. **`chat_stream` does NOT wrap requests.Timeout/ConnectionError in LLM-domain exception** (Task 3.4 code review, plan-locked): inconsistent with `chat()` which DOES wrap. Raw `requests.exceptions.ConnectionError` leaks to callers catching `LLMError`. Mirror chat()'s try/except around the streaming POST when plan unlocked.
+
+61. **Retry-After fallback inconsistency between `chat` and `chat_stream`** (Task 3.4 code review): chat_stream uses `r.headers.get("Retry-After", "1")` (empty string passes through); chat uses `r.headers.get("Retry-After") or "1"` (empty falls back). Plan-locked. Minor downstream parser robustness issue.
+
+62. **`validate_slugs` lacks HTTP-Referer/X-Title headers** (Task 3.4 code review, plan-locked): inconsistent with chat() headers. OpenRouter doesn't require these on /models GET. Cosmetic.
+
+63. **Test `test_validate_slugs_timeout_returns_empty_set` is mis-named** (Task 3.4 code review): tests unreachable, not timeout. Rename in next test-hygiene pass.
+
+64. **`test_llm_streaming.py` unused imports `json` + `pytest`** (Task 3.4 code review, plan-verbatim): will be flagged by ruff/flake8 when added in Phase 12.
+
+65. **`prompts.py` regex requires `\n` line endings** (Task 3.5 code review, plan-locked): a `.md` file with CRLF (`\r\n`) line endings would (a) fail `_FRONTMATTER_RE.match` entirely, (b) fail `_HASH_LINE_RE` if the prompt_hash line ends `\r\n`. Mitigation: add `.gitattributes` to enforce LF. Forward-looking for Phase 12.
+
+66. **`prompts.py` `meta.get("prompt_version", "0.0.0")` silent default** (Task 3.5 code review, plan-locked): if a future prompt is missing the version field, version silently becomes `"0.0.0"` and audit logs record a nonsensical version. Add startup validation to fail-fast on missing frontmatter in Task 11.1.
+
+67. **`test_prompts.py` `"---" not in p.body` assertion is maintenance booby-trap** (Task 3.5 code review): a future prompt with legitimate markdown horizontal rule (`---`) in body fails the test. Plan-locked; documented for future authors.
 
 ---
 
