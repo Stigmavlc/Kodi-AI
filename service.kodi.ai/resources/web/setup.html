@@ -1,0 +1,612 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0e1a">
+<meta name="referrer" content="no-referrer">
+<title>Kodi-AI Setup</title>
+<style>
+  :root {
+    --bg: #0a0e1a;
+    --bg-card: #111828;
+    --bg-card-2: #182236;
+    --accent: #00d4ff;
+    --accent-dim: #00a2db;
+    --text: #f0f8ff;
+    --text-dim: #7fb3d5;
+    --ok: #00e676;
+    --warn: #ffb300;
+    --err: #ff5252;
+    --hairline: rgba(127, 179, 213, 0.18);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 16px;
+    line-height: 1.45;
+    min-height: 100vh;
+  }
+  body {
+    padding: 16px 16px 96px;
+    max-width: 560px;
+    margin: 0 auto;
+  }
+  h1 {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--accent);
+    margin: 8px 0 16px;
+    letter-spacing: 0.5px;
+  }
+  h2 {
+    font-size: 17px;
+    font-weight: 700;
+    color: var(--text);
+    margin: 0 0 12px;
+  }
+  p { margin: 8px 0; }
+  .dim { color: var(--text-dim); font-size: 14px; }
+  .small { font-size: 13px; }
+  .mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  .warn-banner {
+    background: rgba(255, 179, 0, 0.12);
+    border: 1px solid rgba(255, 179, 0, 0.35);
+    color: var(--warn);
+    border-radius: 10px;
+    padding: 10px 14px;
+    font-size: 14px;
+    margin-bottom: 16px;
+  }
+  .progress {
+    display: flex; gap: 6px; margin-bottom: 18px;
+  }
+  .progress > div {
+    flex: 1;
+    height: 4px;
+    background: var(--bg-card);
+    border-radius: 2px;
+  }
+  .progress > div.active { background: var(--accent); }
+  .progress > div.done { background: var(--accent-dim); }
+
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--hairline);
+    border-radius: 14px;
+    padding: 18px;
+    margin-bottom: 16px;
+  }
+  .step-meta {
+    color: var(--text-dim);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    margin-bottom: 4px;
+  }
+
+  ol { padding-left: 18px; margin: 8px 0 12px; }
+  ol li { margin: 6px 0; }
+  a { color: var(--accent); text-decoration: none; }
+  a:active { opacity: 0.65; }
+
+  input[type="text"], input[type="password"], textarea {
+    width: 100%;
+    background: var(--bg-card-2);
+    border: 1px solid var(--hairline);
+    border-radius: 10px;
+    color: var(--text);
+    font-size: 16px;
+    padding: 12px 14px;
+    outline: none;
+    -webkit-appearance: none;
+  }
+  input[type="text"]:focus, input[type="password"]:focus {
+    border-color: var(--accent);
+  }
+
+  .btn {
+    display: inline-block;
+    background: var(--accent);
+    color: #001821;
+    font-weight: 700;
+    border: none;
+    border-radius: 10px;
+    padding: 12px 18px;
+    font-size: 16px;
+    cursor: pointer;
+    width: 100%;
+    margin-top: 12px;
+    text-align: center;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .btn:active { background: var(--accent-dim); }
+  .btn.secondary {
+    background: transparent;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+  }
+  .btn.disabled {
+    opacity: 0.5; pointer-events: none;
+  }
+  .big-btn {
+    display: block;
+    background: var(--accent);
+    color: #001821;
+    font-weight: 700;
+    border: none;
+    border-radius: 14px;
+    padding: 18px 22px;
+    font-size: 18px;
+    width: 100%;
+    text-align: center;
+    margin: 14px 0;
+    text-decoration: none;
+  }
+
+  .status {
+    margin-top: 12px;
+    font-size: 14px;
+    padding: 10px 12px;
+    border-radius: 8px;
+  }
+  .status.ok { background: rgba(0, 230, 118, 0.14); color: var(--ok); }
+  .status.err { background: rgba(255, 82, 82, 0.14); color: var(--err); }
+  .status.info { background: rgba(0, 212, 255, 0.10); color: var(--accent); }
+
+  .configured {
+    background: rgba(0, 230, 118, 0.10);
+    border: 1px solid rgba(0, 230, 118, 0.3);
+    border-radius: 10px;
+    padding: 12px 14px;
+    color: var(--ok);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 14px;
+  }
+  .configured button {
+    background: transparent;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    border-radius: 8px;
+    padding: 6px 12px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+
+  .radio-row {
+    display: flex; flex-direction: column; gap: 10px;
+    margin: 10px 0 4px;
+  }
+  .radio-row label {
+    display: flex; align-items: flex-start; gap: 12px;
+    padding: 12px;
+    border: 1px solid var(--hairline);
+    border-radius: 10px;
+    cursor: pointer;
+  }
+  .radio-row input[type=radio]:checked + .radio-text { color: var(--accent); }
+  .radio-row label:has(input:checked) {
+    border-color: var(--accent);
+    background: rgba(0, 212, 255, 0.06);
+  }
+  .radio-text { display: block; }
+  .radio-text strong { display: block; color: var(--text); }
+
+  .checkbox-row label {
+    display: flex; align-items: center; gap: 10px;
+    margin: 12px 0; font-size: 14px; color: var(--text-dim);
+  }
+
+  .hidden { display: none !important; }
+
+  .pair-secret {
+    background: var(--bg-card-2);
+    border: 1px solid var(--hairline);
+    border-radius: 10px;
+    padding: 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 14px;
+    color: var(--accent);
+    word-break: break-all;
+    margin-bottom: 10px;
+  }
+
+  .done-glyph {
+    color: var(--ok);
+    font-size: 56px;
+    text-align: center;
+    margin: 12px 0;
+  }
+</style>
+</head>
+<body>
+  <h1>Kodi-AI · Setup</h1>
+
+  <div class="warn-banner" id="warnBanner">
+    Setup over local network. Only continue if you trust your WiFi.
+  </div>
+
+  <div class="progress" aria-hidden="true">
+    <div id="p1" class="active"></div>
+    <div id="p2"></div>
+    <div id="p3"></div>
+    <div id="p4"></div>
+  </div>
+
+  <!-- ────────────────────────────────────────────────────── -->
+  <!-- Step 1 — OpenRouter -->
+  <!-- ────────────────────────────────────────────────────── -->
+  <div id="step1" class="card">
+    <div class="step-meta">Step 1 of 4</div>
+    <h2>OpenRouter API key</h2>
+
+    <div id="orConfigured" class="configured hidden">
+      <span>Already configured</span>
+      <button id="orChange">Change</button>
+    </div>
+
+    <div id="orInput">
+      <p class="dim">OpenRouter is a single gateway to GPT, Claude and Gemini. Typical cost: <strong>$1–5/month</strong> for normal Kodi-AI use.</p>
+      <ol class="small">
+        <li>Open <a href="https://openrouter.ai/keys" target="_blank" rel="noopener noreferrer">openrouter.ai/keys</a></li>
+        <li>Sign in, add <strong>$5 credit</strong> under Credits.</li>
+        <li>Tap <strong>Create Key</strong>, copy it.</li>
+      </ol>
+      <input id="orKey" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="sk-or-...">
+      <button class="btn" id="orValidate">Validate &amp; continue</button>
+      <div id="orStatus" class="status hidden"></div>
+    </div>
+  </div>
+
+  <!-- ────────────────────────────────────────────────────── -->
+  <!-- Step 2 — Telegram bot -->
+  <!-- ────────────────────────────────────────────────────── -->
+  <div id="step2" class="card hidden">
+    <div class="step-meta">Step 2 of 4</div>
+    <h2>Telegram bot</h2>
+
+    <div id="botConfigured" class="configured hidden">
+      <span id="botConfiguredText">Already configured</span>
+      <button id="botChange">Change</button>
+    </div>
+
+    <div id="botInput">
+      <p class="dim">You'll create your <strong>own</strong> Telegram bot. Kodi-AI talks to you through it.</p>
+      <ol class="small">
+        <li>Open <a href="https://t.me/BotFather" target="_blank" rel="noopener noreferrer">@BotFather</a> in Telegram.</li>
+        <li>Send <span class="mono">/newbot</span>, pick a name and username (must end in <strong>bot</strong>).</li>
+        <li>Copy the token BotFather returns (<span class="mono">digits:letters</span>).</li>
+      </ol>
+      <input id="botToken" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="123456:ABC...">
+      <button class="btn" id="botValidate">Validate &amp; continue</button>
+      <div id="botStatus" class="status hidden"></div>
+
+      <div class="checkbox-row">
+        <label>
+          <input id="botPrivacyDone" type="checkbox">
+          I sent <span class="mono">/setprivacy</span> → <strong>Disable</strong> to @BotFather (recommended)
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <!-- ────────────────────────────────────────────────────── -->
+  <!-- Step 3 — Mode -->
+  <!-- ────────────────────────────────────────────────────── -->
+  <div id="step3" class="card hidden">
+    <div class="step-meta">Step 3 of 4</div>
+    <h2>Agent mode</h2>
+    <p class="dim">How should Kodi-AI apply fixes when it detects a problem?</p>
+    <div class="radio-row">
+      <label>
+        <input type="radio" name="mode" value="auto" checked>
+        <span class="radio-text">
+          <strong>Auto</strong>
+          Apply safe fixes automatically (recommended). You're still notified for every fix.
+        </span>
+      </label>
+      <label>
+        <input type="radio" name="mode" value="manual">
+        <span class="radio-text">
+          <strong>Manual</strong>
+          Ask via Telegram before applying any fix.
+        </span>
+      </label>
+    </div>
+    <button class="btn" id="modeSave">Save &amp; continue</button>
+    <div id="modeStatus" class="status hidden"></div>
+  </div>
+
+  <!-- ────────────────────────────────────────────────────── -->
+  <!-- Step 4 — Pair -->
+  <!-- ────────────────────────────────────────────────────── -->
+  <div id="step4" class="card hidden">
+    <div class="step-meta">Step 4 of 4</div>
+    <h2>Pair your phone</h2>
+    <p class="dim">Open your bot in Telegram. Kodi-AI will recognise the first message as yours.</p>
+    <a id="pairLink" class="big-btn" href="#" target="_blank" rel="noopener noreferrer">Open in Telegram to pair</a>
+
+    <p class="small dim">If Telegram doesn't open, send this to your bot manually:</p>
+    <div class="pair-secret mono" id="pairSecret"></div>
+    <button class="btn secondary" id="copySecret">Copy</button>
+    <div id="pairStatus" class="status info">Waiting for pairing… (up to 60s)</div>
+  </div>
+
+  <!-- ────────────────────────────────────────────────────── -->
+  <!-- Done -->
+  <!-- ────────────────────────────────────────────────────── -->
+  <div id="done" class="card hidden">
+    <div class="done-glyph">✓</div>
+    <h2 style="text-align:center;">All set!</h2>
+    <p class="dim" style="text-align:center;">Return to your TV — it will close automatically.</p>
+  </div>
+
+<script>
+(function () {
+  "use strict";
+
+  var TOKEN = "{{TOKEN}}";
+  var HAS_OPENROUTER = "{{HAS_OPENROUTER}}" === "true";
+  var HAS_BOT = "{{HAS_BOT}}" === "true";
+  var BOT_USERNAME = "{{BOT_USERNAME}}";
+
+  var state = {
+    step: 1,
+    openrouter_ok: HAS_OPENROUTER,
+    telegram_ok: HAS_BOT,
+    bot_username: BOT_USERNAME || "",
+    bot_token: "",
+    or_key: "",
+    mode: "auto",
+    setup_secret: "",
+    deeplink: ""
+  };
+
+  function $(id) { return document.getElementById(id); }
+
+  function setProgress() {
+    ["p1", "p2", "p3", "p4"].forEach(function (id, idx) {
+      var el = $(id);
+      el.classList.remove("active", "done");
+      if (idx + 1 < state.step) el.classList.add("done");
+      else if (idx + 1 === state.step) el.classList.add("active");
+    });
+  }
+
+  function showStep(n) {
+    state.step = n;
+    ["step1", "step2", "step3", "step4", "done"].forEach(function (id) {
+      $(id).classList.add("hidden");
+    });
+    if (n === 5) {
+      $("done").classList.remove("hidden");
+    } else {
+      $("step" + n).classList.remove("hidden");
+    }
+    setProgress();
+    try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch (e) {}
+  }
+
+  function setStatus(el, kind, text) {
+    el.className = "status " + kind;
+    el.textContent = text;
+    el.classList.remove("hidden");
+  }
+
+  function clearStatus(el) {
+    el.className = "status hidden";
+    el.textContent = "";
+  }
+
+  function postJson(path, payload) {
+    return fetch(path + "?token=" + encodeURIComponent(TOKEN), {
+      method: "POST",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload || {})
+    }).then(function (r) { return r.json(); });
+  }
+
+  // ───────────────────────────────────────────────────────
+  // Step 1 — OpenRouter
+  // ───────────────────────────────────────────────────────
+  if (state.openrouter_ok) {
+    $("orConfigured").classList.remove("hidden");
+    $("orInput").classList.add("hidden");
+  }
+  $("orChange").addEventListener("click", function () {
+    $("orConfigured").classList.add("hidden");
+    $("orInput").classList.remove("hidden");
+    state.openrouter_ok = false;
+  });
+
+  $("orValidate").addEventListener("click", function () {
+    var key = $("orKey").value.trim();
+    if (!key && !state.openrouter_ok) {
+      setStatus($("orStatus"), "err", "Paste your OpenRouter key first.");
+      return;
+    }
+    if (!key && state.openrouter_ok) {
+      // Skip validation — already configured.
+      showStep(2);
+      return;
+    }
+    var btn = $("orValidate");
+    btn.classList.add("disabled");
+    btn.textContent = "Validating…";
+    clearStatus($("orStatus"));
+    postJson("/api/validate-openrouter", { api_key: key })
+      .then(function (resp) {
+        btn.classList.remove("disabled");
+        btn.textContent = "Validate & continue";
+        if (resp.ok) {
+          state.or_key = key;
+          state.openrouter_ok = true;
+          setStatus($("orStatus"), "ok", "Key valid. Continuing…");
+          setTimeout(function () { showStep(2); }, 600);
+        } else {
+          setStatus($("orStatus"), "err", resp.error || "Validation failed.");
+        }
+      })
+      .catch(function (e) {
+        btn.classList.remove("disabled");
+        btn.textContent = "Validate & continue";
+        setStatus($("orStatus"), "err", "Network error: " + e);
+      });
+  });
+
+  // ───────────────────────────────────────────────────────
+  // Step 2 — Telegram bot
+  // ───────────────────────────────────────────────────────
+  if (state.telegram_ok && state.bot_username) {
+    $("botConfigured").classList.remove("hidden");
+    $("botConfiguredText").textContent = "Already configured (@" + state.bot_username + ")";
+    $("botInput").classList.add("hidden");
+  }
+  $("botChange").addEventListener("click", function () {
+    $("botConfigured").classList.add("hidden");
+    $("botInput").classList.remove("hidden");
+    state.telegram_ok = false;
+  });
+
+  $("botValidate").addEventListener("click", function () {
+    var token = $("botToken").value.trim();
+    if (!token && !state.telegram_ok) {
+      setStatus($("botStatus"), "err", "Paste your bot token first.");
+      return;
+    }
+    if (!token && state.telegram_ok) {
+      showStep(3);
+      return;
+    }
+    var btn = $("botValidate");
+    btn.classList.add("disabled");
+    btn.textContent = "Validating…";
+    clearStatus($("botStatus"));
+    postJson("/api/validate-telegram", { bot_token: token })
+      .then(function (resp) {
+        btn.classList.remove("disabled");
+        btn.textContent = "Validate & continue";
+        if (resp.ok) {
+          state.bot_token = token;
+          state.bot_username = resp.username || "";
+          state.telegram_ok = true;
+          setStatus($("botStatus"), "ok", "@" + state.bot_username + " verified.");
+          setTimeout(function () { showStep(3); }, 800);
+        } else {
+          setStatus($("botStatus"), "err", resp.error || "Validation failed.");
+        }
+      })
+      .catch(function (e) {
+        btn.classList.remove("disabled");
+        btn.textContent = "Validate & continue";
+        setStatus($("botStatus"), "err", "Network error: " + e);
+      });
+  });
+
+  // ───────────────────────────────────────────────────────
+  // Step 3 — Mode
+  // ───────────────────────────────────────────────────────
+  $("modeSave").addEventListener("click", function () {
+    var radios = document.getElementsByName("mode");
+    for (var i = 0; i < radios.length; i++) {
+      if (radios[i].checked) { state.mode = radios[i].value; break; }
+    }
+    var btn = $("modeSave");
+    btn.classList.add("disabled");
+    btn.textContent = "Saving…";
+    var payload = {
+      mode: state.mode
+    };
+    if (state.or_key) payload.openrouter_key = state.or_key;
+    if (state.bot_token) payload.bot_token = state.bot_token;
+    if (state.bot_username) payload.bot_username = state.bot_username;
+
+    postJson("/api/save-config", payload)
+      .then(function (resp) {
+        btn.classList.remove("disabled");
+        btn.textContent = "Save & continue";
+        if (resp.ok) {
+          state.setup_secret = resp.setup_secret;
+          state.deeplink = resp.deeplink;
+          $("pairLink").setAttribute("href", state.deeplink);
+          $("pairSecret").textContent =
+            "/start " + state.setup_secret +
+            (state.bot_username ? "  →  @" + state.bot_username : "");
+          showStep(4);
+          beginPairingPoll();
+        } else {
+          setStatus($("modeStatus"), "err", resp.error || "Save failed.");
+        }
+      })
+      .catch(function (e) {
+        btn.classList.remove("disabled");
+        btn.textContent = "Save & continue";
+        setStatus($("modeStatus"), "err", "Network error: " + e);
+      });
+  });
+
+  // ───────────────────────────────────────────────────────
+  // Step 4 — Pair (poll)
+  // ───────────────────────────────────────────────────────
+  $("copySecret").addEventListener("click", function () {
+    var text = "/start " + state.setup_secret;
+    var nav = navigator.clipboard;
+    if (nav && nav.writeText) {
+      nav.writeText(text).then(function () {
+        $("copySecret").textContent = "Copied";
+        setTimeout(function () { $("copySecret").textContent = "Copy"; }, 1500);
+      }).catch(function () { fallbackCopy(text); });
+    } else {
+      fallbackCopy(text);
+    }
+  });
+
+  function fallbackCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand("copy"); } catch (e) {}
+    document.body.removeChild(ta);
+    $("copySecret").textContent = "Copied";
+    setTimeout(function () { $("copySecret").textContent = "Copy"; }, 1500);
+  }
+
+  function beginPairingPoll() {
+    var deadline = Date.now() + 60 * 1000;
+    var timer = null;
+    function tick() {
+      postJson("/api/check-paired", {})
+        .then(function (resp) {
+          if (resp.paired) {
+            if (timer) clearInterval(timer);
+            setStatus($("pairStatus"), "ok", "Paired ✓");
+            setTimeout(function () { showStep(5); }, 800);
+          } else if (Date.now() > deadline) {
+            if (timer) clearInterval(timer);
+            setStatus($("pairStatus"), "info",
+              "You can finish pairing later from the addon menu. " +
+              "Closing this page won't lose your setup.");
+          }
+        })
+        .catch(function () { /* transient — keep polling */ });
+    }
+    tick();
+    timer = setInterval(tick, 2000);
+  }
+
+  // Boot
+  setProgress();
+})();
+</script>
+</body>
+</html>
