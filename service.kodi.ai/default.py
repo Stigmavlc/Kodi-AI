@@ -274,17 +274,38 @@ def setup_wizard() -> None:
         return
 
     # ──────────────────────────────────────────────────────────────────
-    # STEP 1 — OpenRouter
+    # STEP 1 — OpenRouter (multi-screen for clarity)
     # ──────────────────────────────────────────────────────────────────
+
+    # 1.0 — What's OpenRouter and why we need it
     d.ok(
         TITLE,
         f"{_step(1, 5, 'OpenRouter API Key')}\n\n"
-        f"Kodi-AI uses OpenRouter to route LLM calls.\n\n"
-        f"{_h2('Get a key (free, ~$5 credit recommended):')}\n"
-        f"   {_BULLET} Visit [B]openrouter.ai/keys[/B]\n"
-        f"   {_BULLET} Create a key (starts with [B]sk-or-...[/B])\n"
-        f"   {_BULLET} Add credit at [B]openrouter.ai/credits[/B]\n\n"
-        f"{_dim('Press OK to enter your key.')}",
+        f"{_h2('What is OpenRouter?')}\n"
+        f"It's a [B]single gateway[/B] to all major AI models — GPT, Claude,\n"
+        f"Gemini, etc. One API key, one bill, you pick the model.\n\n"
+        f"{_h2('Why do we use it?')}\n"
+        f"   {_BULLET} Kodi-AI uses cheap models for triage ([B]~$0.0001[/B] per check)\n"
+        f"   {_BULLET} And a better model when actually fixing things\n"
+        f"   {_BULLET} You only pay for what you use — no subscription\n"
+        f"   {_BULLET} Typical month: [B]$1–5[/B] depending on how often Kodi breaks\n\n"
+        f"{_dim('Press OK to see how to get a key.')}",
+    )
+
+    # 1.1 — How to sign up + get the key + add credit
+    d.ok(
+        TITLE,
+        f"{_h1('Get your OpenRouter key')}\n{_HR}\n\n"
+        f"{_h2('On your phone or computer:')}\n\n"
+        f"  [B][COLOR {COLOR_ACCENT}]1.[/COLOR][/B]  Open [B]openrouter.ai[/B] in a browser\n\n"
+        f"  [B][COLOR {COLOR_ACCENT}]2.[/COLOR][/B]  Click [B]Sign in[/B] (top-right)\n"
+        f"      Use Google / GitHub / email — whatever's easiest\n\n"
+        f"  [B][COLOR {COLOR_ACCENT}]3.[/COLOR][/B]  Click your profile (top-right) → [B]Credits[/B]\n"
+        f"      Add [B]$5[/B] (covers months of use; Stripe / card)\n\n"
+        f"  [B][COLOR {COLOR_ACCENT}]4.[/COLOR][/B]  Click your profile → [B]Keys[/B]\n"
+        f"      Press [B]Create Key[/B], give it any name (e.g. \"Kodi\")\n"
+        f"      [B]Copy the key[/B] — looks like [COLOR {COLOR_ACCENT}]sk-or-v1-abc123...[/COLOR]\n\n"
+        f"  [B][COLOR {COLOR_OK}]5.[/COLOR][/B]  Press OK below and paste the key on the next screen.\n",
     )
     current_key = secrets.get_secret("openrouter_key") or ""
     new_key = d.input(
@@ -333,24 +354,104 @@ def setup_wizard() -> None:
             return
 
     # ──────────────────────────────────────────────────────────────────
-    # STEP 2 — Telegram bot
+    # STEP 2 — Telegram bot (multi-screen, first-timer-friendly)
     # ──────────────────────────────────────────────────────────────────
+
+    # 2.0 — Intro + branching for Telegram newcomers
     d.ok(
         TITLE,
         f"{_step(2, 5, 'Telegram Bot')}\n\n"
-        f"Kodi-AI talks to you via your own Telegram bot.\n\n"
-        f"{_h2('Create one:')}\n"
-        f"   {_BULLET} Open Telegram on your phone\n"
-        f"   {_BULLET} Message [B]@BotFather[/B]\n"
-        f"   {_BULLET} Send [B]/newbot[/B], follow the prompts\n"
-        f"   {_BULLET} Copy the [B]bot_token[/B] ([I]like 12345:ABC...[/I])\n\n"
-        f"{_h2('IMPORTANT — privacy mode:')}\n"
-        f"   {_BULLET} Send [B]/setprivacy[/B] to BotFather\n"
-        f"   {_BULLET} Choose your bot, then [B]Disable[/B]\n"
-        f"   {_BULLET} {_dim('(so it can read DMs sent to it)')}\n",
+        f"Kodi-AI talks to you through [B]your own[/B] Telegram bot.\n"
+        f"You'll create the bot now — it takes about 1 minute.\n\n"
+        f"{_h2('Why a bot, not just a regular Telegram chat?')}\n"
+        f"   {_BULLET} Bots can be controlled by code (Kodi-AI talks AS the bot)\n"
+        f"   {_BULLET} The bot is [B]100% yours[/B] — only you have its token\n"
+        f"   {_BULLET} No central server, no shared accounts, no spam\n",
+    )
+
+    knows_telegram = d.yesno(
+        TITLE,
+        f"{_h2('Quick check:')}\n\n"
+        f"Have you used Telegram before, and is it installed on your phone?",
+        yeslabel="Yes, ready",
+        nolabel="No, help me",
+    )
+
+    # 2.1 — Install Telegram (only shown to first-timers)
+    if not knows_telegram:
+        d.ok(
+            TITLE,
+            f"{_h1('Install Telegram first')}\n{_HR}\n\n"
+            f"Telegram is a free messaging app (like WhatsApp). You need it\n"
+            f"to talk to your Kodi-AI bot.\n\n"
+            f"{_h2('Install on your phone:')}\n"
+            f"   {_BULLET} [B]iPhone:[/B] App Store → search [B]Telegram[/B] → install\n"
+            f"   {_BULLET} [B]Android:[/B] Play Store → search [B]Telegram[/B] → install\n"
+            f"   {_BULLET} [B]Desktop:[/B] [B]telegram.org[/B] (works too, but phone easier)\n\n"
+            f"{_h2('Once installed:')}\n"
+            f"   {_BULLET} Open Telegram\n"
+            f"   {_BULLET} Sign up with your phone number\n"
+            f"   {_BULLET} Press OK below when you're logged in",
+        )
+
+    # 2.2 — Find @BotFather
+    d.ok(
+        TITLE,
+        f"{_h1('Find @BotFather')}\n{_HR}\n\n"
+        f"[B]@BotFather[/B] is Telegram's official bot-maker. It's a special bot\n"
+        f"run by Telegram itself that lets anyone create their own bot.\n\n"
+        f"{_h2('Open @BotFather:')}\n"
+        f"   {_BULLET} In Telegram, tap the [B]search icon[/B] (top-right magnifier)\n"
+        f"   {_BULLET} Type [B]@BotFather[/B] (with the @ symbol)\n"
+        f"   {_BULLET} Tap the result with the [B]blue checkmark[/B] (official)\n"
+        f"   {_BULLET} Tap [B]Start[/B] (or send [B]/start[/B] if you've used it before)\n\n"
+        f"{_dim('You should see a welcome message from BotFather.')}",
+    )
+
+    # 2.3 — Create the bot (step-by-step with what BotFather will ask)
+    d.ok(
+        TITLE,
+        f"{_h1('Create your bot')}\n{_HR}\n\n"
+        f"{_h2('Send these to BotFather, one at a time:')}\n\n"
+        f"  [B][COLOR {COLOR_ACCENT}]1.[/COLOR][/B]  Send [B]/newbot[/B]\n"
+        f"      BotFather: [I]\"Alright, a new bot. How are we going to call it?\"[/I]\n\n"
+        f"  [B][COLOR {COLOR_ACCENT}]2.[/COLOR][/B]  Type a [B]display name[/B], anything you want:\n"
+        f"      e.g. [I]\"My Kodi Helper\"[/I] or [I]\"Shield Watcher\"[/I]\n"
+        f"      BotFather: [I]\"Good. Now let's choose a username...\"[/I]\n\n"
+        f"  [B][COLOR {COLOR_ACCENT}]3.[/COLOR][/B]  Type a [B]username[/B] — must be unique and end in [B]bot[/B]:\n"
+        f"      e.g. [I]\"ivan_kodi_helper_bot\"[/I] or [I]\"shieldwatcher_bot\"[/I]\n"
+        f"      If taken, BotFather will tell you — just try another name.\n\n"
+        f"  [B][COLOR {COLOR_ACCENT}]4.[/COLOR][/B]  BotFather replies with a long [B]TOKEN[/B], like:\n"
+        f"      [COLOR {COLOR_ACCENT}]1234567890:AAEhBHl_ABcDeFgHiJkLmNoPqRsTuVwXyZ[/COLOR]\n\n"
+        f"  [B][COLOR {COLOR_OK}]5.[/COLOR][/B]  [B]Copy that whole token[/B] — you'll paste it on the next screen.\n",
+    )
+
+    # 2.4 — Privacy setting (critical for the bot to read your messages)
+    d.ok(
+        TITLE,
+        f"{_h1('Disable privacy mode (REQUIRED)')}\n{_HR}\n\n"
+        f"By default Telegram bots [B]can't read messages[/B] sent to them — a\n"
+        f"safety feature. We need to turn that off for [I]your[/I] bot so Kodi-AI\n"
+        f"can actually receive what you type.\n\n"
+        f"{_h2('In your @BotFather chat:')}\n"
+        f"   {_BULLET} Send [B]/setprivacy[/B]\n"
+        f"   {_BULLET} BotFather: [I]\"Choose a bot...\"[/I] → tap [B]your bot[/B]\n"
+        f"   {_BULLET} BotFather shows two options: tap [B]Disable[/B]\n"
+        f"   {_BULLET} Confirmation: [I]\"Success! ... will receive all messages.\"[/I]\n\n"
+        f"{_dim('Without this step, Kodi-AI cannot see your replies.')}",
+    )
+
+    # 2.5 — Input the token
+    d.ok(
+        TITLE,
+        f"{_h1('Paste the bot token')}\n{_HR}\n\n"
+        f"On the next screen, paste the long [B]token[/B] BotFather gave you.\n\n"
+        f"{_dim('Format reminder:')}\n"
+        f"   [COLOR {COLOR_ACCENT}]1234567890:AAEhBHl_ABcDeFgHiJkLmNoPqRsTuVwXyZ[/COLOR]\n\n"
+        f"{_dim('(numbers, colon, then a longer letters+numbers+_-+ string)')}",
     )
     bot_token = d.input(
-        "Telegram bot_token",
+        "Telegram bot_token  (paste from BotFather)",
         defaultt=secrets.get_secret("bot_token") or "",
         type=xbmcgui.INPUT_ALPHANUM,
     )

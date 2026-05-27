@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <addon id="service.kodi.ai"
        name="Kodi-AI"
-       version="0.1.1"
+       version="0.1.2"
        provider-name="ivan">
   <requires>
     <import addon="xbmc.python" version="3.0.1"/>
@@ -17,7 +17,8 @@
     <description lang="en_GB">Monitors Kodi logs, classifies issues with a cheap LLM, attempts auto-fixes via OpenRouter tool-use agent, surfaces results via Telegram bot. V1 personal use on Android TV.</description>
     <platform>all</platform>
     <license>MIT</license>
-    <news>0.1.1: branded icon + fanart; polished setup wizard + status panel.
+    <news>0.1.2: beginner-friendly Telegram + OpenRouter onboarding (multi-screen, step-by-step, branches for first-timers).
+0.1.1: branded icon + fanart; polished setup wizard + status panel.
 0.1.0: initial V1 release.</news>
     <assets>
       <icon>icon.png</icon>
