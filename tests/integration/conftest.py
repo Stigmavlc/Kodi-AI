@@ -16,3 +16,12 @@ def reset_fake_fs():
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "integration: kodistubs-backed integration test")
+
+
+@pytest.fixture(autouse=True)
+def set_startup_complete():
+    """Integration tests don't run boot pass — manually signal startup_complete."""
+    from lib import concurrency
+    concurrency.startup_complete_event.set()
+    yield
+    # Don't clear — other tests may run after
