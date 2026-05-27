@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <settings>
   <category label="Setup">
-    <setting id="run_setup_wizard" type="action" label="▶  Run Setup Wizard (first-time setup)" action="RunScript(special://home/addons/service.kodi.ai/default.py,setup_wizard)"/>
+    <setting id="setup_via_phone" type="action" label="📱  Set up via phone  (recommended)" action="RunScript(special://home/addons/service.kodi.ai/default.py,setup_via_phone)"/>
+    <setting id="run_setup_wizard" type="action" label="⌨  Manual setup (TV keyboard)" action="RunScript(special://home/addons/service.kodi.ai/default.py,setup_wizard)"/>
     <setting id="open_status_panel" type="action" label="📊  Open Status Panel" action="RunScript(special://home/addons/service.kodi.ai/default.py)"/>
   </category>
   <category label="General">

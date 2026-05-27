@@ -1,17 +1,20 @@
 """Kodi-AI UI entry point. Invoked via RunScript(default.py [, action]).
 
 Actions:
-  (none)        → status panel with action menu
-  setup_wizard  → 4-step setup flow
-  show_secret   → QR PNG + setup_secret display
-  reset_bot     → confirm + clear allowlist + generate new secret
+  (none)            → status panel with action menu
+  setup_via_phone   → phone-driven setup (QR + local HTTP server)  ← preferred
+  setup_wizard      → fallback 4-step TV-keyboard setup
+  show_secret       → QR PNG + setup_secret display
+  reset_bot         → confirm + clear allowlist + generate new secret
 
 Spec: §1.14, §5.2, §7.3. Kodi-native UI only (Dialog().textviewer/select/
 input/yesno/ok/notification). Estuary-skin-friendly [COLOR]/[B]/[I] tokens.
 """
 from __future__ import annotations
 import os
+import secrets as secrets_lib
 import sys
+import threading
 import time
 
 _here = os.path.dirname(os.path.abspath(__file__))
@@ -19,12 +22,17 @@ if _here not in sys.path:
     sys.path.insert(0, _here)
 
 import xbmc
+import xbmcaddon
 import xbmcgui
 import xbmcvfs  # noqa: F401 (used transitively via lib.state_paths)
 
 from lib import state_paths, settings, secrets, qr
 from lib.telegram import auth as tg_auth
 from lib.llm import client as llm_client
+
+
+ADDON_ID = "service.kodi.ai"
+_addon_path = xbmcaddon.Addon(ADDON_ID).getAddonInfo("path")
 
 
 ADDON_NAME = "Kodi-AI"
@@ -450,9 +458,116 @@ def setup_wizard() -> None:
     )
 
 
+def setup_via_phone() -> None:
+    """Phone-driven setup: TV shows QR + status, phone does all input.
+
+    Architecture:
+      1. Detect LAN IP (xbmc.getIPAddress → UDP-connect fallback).
+      2. Reserve a port (8088..8099 preferred, else OS-assigned).
+      3. Generate a 128-bit session token.
+      4. Render the setup URL as a QR PNG → write to .qr/ in profile.
+      5. Start the local HTTP server.
+      6. Open the SetupWindow (modal); its polling thread mirrors progress.
+      7. After dialog dismisses (auto-close on pair, or user Cancel),
+         shut down the server + clean up the QR file.
+    """
+    from lib import setup_ip, setup_server, setup_window  # lazy import
+
+    lan_ip = setup_ip._get_lan_ip()
+    if not lan_ip:
+        xbmcgui.Dialog().ok(
+            "Kodi-AI Setup",
+            "Could not detect your LAN IP.\n\n"
+            "Make sure your Shield is on WiFi or Ethernet, then "
+            "use [B]Manual setup (TV keyboard)[/B] from settings.",
+        )
+        return
+
+    # Reserve port, then immediately close so the server can re-bind it.
+    s, port = setup_server._bind_port()
+    s.close()
+
+    session_token = secrets_lib.token_urlsafe(16)
+    url = f"http://{lan_ip}:{port}/setup?token={session_token}"
+
+    # Render QR + write to profile/.qr/ — atomic + sweep stale (>1h old) files.
+    qr_dir = state_paths.profile_path(".qr")
+    try:
+        os.makedirs(qr_dir, exist_ok=True)
+    except OSError:
+        pass
+    now = time.time()
+    try:
+        for fn in os.listdir(qr_dir):
+            if fn.startswith("kodi-ai-qr-") and fn.endswith(".png"):
+                fp = os.path.join(qr_dir, fn)
+                try:
+                    if now - os.path.getmtime(fp) > 3600:
+                        os.remove(fp)
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    qr_path = os.path.join(qr_dir, f"kodi-ai-qr-{session_token[:8]}.png")
+    try:
+        png = qr.qr_png(url, module_pixel_size=10, ecc_level="M")
+        state_paths.atomic_write(qr_path, png)
+    except Exception as e:
+        xbmcgui.Dialog().ok(
+            "Kodi-AI Setup",
+            f"Could not generate QR code: {e}\n\n"
+            "Use [B]Manual setup (TV keyboard)[/B] from settings.",
+        )
+        return
+
+    server = setup_server.SetupHTTPServer(
+        ("0.0.0.0", port),
+        setup_server.SetupHandler,
+        session_token=session_token,
+        lan_ip=lan_ip,
+        port=port,
+    )
+    server_thread = threading.Thread(
+        target=server.serve_forever, daemon=True, name="kodi-ai-setup-http",
+    )
+    server_thread.start()
+    try:
+        window = setup_window.SetupWindow(
+            "Setup.xml", _addon_path, "Default", "720p",
+            qr_path=qr_path,
+            url=url,
+            session_token=session_token,
+            lan_ip=lan_ip,
+            port=port,
+        )
+        window.doModal()
+        del window  # break the reference so Kodi releases the native window
+    finally:
+        try:
+            server.shutdown()
+        except Exception:
+            pass
+        server_thread.join(timeout=3)
+        try:
+            server.server_close()
+        except Exception:
+            pass
+        try:
+            os.remove(qr_path)
+        except OSError:
+            pass
+
+    if secrets.get_secret("openrouter_key") and secrets.get_secret("bot_token"):
+        xbmcgui.Dialog().notification(
+            ADDON_NAME, "Setup complete", time=3000,
+        )
+
+
 def main() -> None:
     action = sys.argv[1] if len(sys.argv) > 1 else ""
-    if action == "setup_wizard":
+    if action == "setup_via_phone":
+        setup_via_phone()
+    elif action == "setup_wizard":
         setup_wizard()
     elif action == "show_secret":
         show_secret()

@@ -1,0 +1,193 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Kodi-AI · Phone-driven setup dialog.
+
+  Skin contract:
+  - Built-in control types only: image, label, button. No skin-specific
+    types — keeps this dialog compatible with non-Estuary skins.
+  - All textures resolved via special://home/addons/service.kodi.ai/...,
+    NEVER skin-relative texture names (which break on non-Estuary skins).
+  - Default focus: 9101 (URL label — focusable and benign). NOT the Cancel
+    button — that would let an idle OK-press dismiss the dialog.
+  - QR image (9100) uses aspectratio=keep so non-720p skins don't squash it.
+
+  Coordinate system: 1280x720 canvas.
+
+  Spec: phone-driven setup, §1.14 (revised).
+-->
+<window>
+  <defaultcontrol always="true">9101</defaultcontrol>
+  <onload></onload>
+  <controls>
+
+    <!-- Full-bleed background -->
+    <control type="image">
+      <left>0</left>
+      <top>0</top>
+      <width>1280</width>
+      <height>720</height>
+      <texture>special://home/addons/service.kodi.ai/resources/media/setup_bg.png</texture>
+      <aspectratio>scale</aspectratio>
+    </control>
+
+    <!-- Title -->
+    <control type="label" id="9000">
+      <left>0</left>
+      <top>40</top>
+      <width>1280</width>
+      <height>50</height>
+      <align>center</align>
+      <textcolor>FF00D4FF</textcolor>
+      <font>font30</font>
+      <label>Kodi-AI  ·  Setup</label>
+    </control>
+
+    <!-- QR image (left half) -->
+    <control type="image" id="9100">
+      <left>120</left>
+      <top>150</top>
+      <width>440</width>
+      <height>440</height>
+      <texture></texture>
+      <aspectratio>keep</aspectratio>
+    </control>
+
+    <!-- URL label below QR -->
+    <control type="label" id="9101">
+      <left>80</left>
+      <top>610</top>
+      <width>520</width>
+      <height>40</height>
+      <align>center</align>
+      <textcolor>FFF0F8FF</textcolor>
+      <font>font13</font>
+      <label></label>
+    </control>
+
+    <!-- Helper hint under URL -->
+    <control type="label" id="9102">
+      <left>80</left>
+      <top>650</top>
+      <width>520</width>
+      <height>30</height>
+      <align>center</align>
+      <textcolor>FF7FB3D5</textcolor>
+      <font>font12</font>
+      <label>Scan with your phone or open the URL in a browser on the same WiFi.</label>
+    </control>
+
+    <!-- Step list header -->
+    <control type="label" id="9109">
+      <left>660</left>
+      <top>150</top>
+      <width>540</width>
+      <height>40</height>
+      <textcolor>FF7FB3D5</textcolor>
+      <font>font12</font>
+      <label>PROGRESS</label>
+    </control>
+
+    <!-- Step 1 icon + label -->
+    <control type="image" id="9110_icon">
+      <left>660</left>
+      <top>200</top>
+      <width>32</width>
+      <height>32</height>
+      <texture>special://home/addons/service.kodi.ai/resources/media/step_pending.png</texture>
+      <aspectratio>keep</aspectratio>
+    </control>
+    <control type="label" id="9110">
+      <left>704</left>
+      <top>198</top>
+      <width>480</width>
+      <height>36</height>
+      <textcolor>FFF0F8FF</textcolor>
+      <font>font13</font>
+      <label>Waiting for phone</label>
+    </control>
+
+    <!-- Step 2 -->
+    <control type="image" id="9111_icon">
+      <left>660</left>
+      <top>250</top>
+      <width>32</width>
+      <height>32</height>
+      <texture>special://home/addons/service.kodi.ai/resources/media/step_pending.png</texture>
+      <aspectratio>keep</aspectratio>
+    </control>
+    <control type="label" id="9111">
+      <left>704</left>
+      <top>248</top>
+      <width>480</width>
+      <height>36</height>
+      <textcolor>FFF0F8FF</textcolor>
+      <font>font13</font>
+      <label>OpenRouter key received</label>
+    </control>
+
+    <!-- Step 3 -->
+    <control type="image" id="9112_icon">
+      <left>660</left>
+      <top>300</top>
+      <width>32</width>
+      <height>32</height>
+      <texture>special://home/addons/service.kodi.ai/resources/media/step_pending.png</texture>
+      <aspectratio>keep</aspectratio>
+    </control>
+    <control type="label" id="9112">
+      <left>704</left>
+      <top>298</top>
+      <width>480</width>
+      <height>36</height>
+      <textcolor>FFF0F8FF</textcolor>
+      <font>font13</font>
+      <label>Telegram bot configured</label>
+    </control>
+
+    <!-- Step 4 -->
+    <control type="image" id="9113_icon">
+      <left>660</left>
+      <top>350</top>
+      <width>32</width>
+      <height>32</height>
+      <texture>special://home/addons/service.kodi.ai/resources/media/step_pending.png</texture>
+      <aspectratio>keep</aspectratio>
+    </control>
+    <control type="label" id="9113">
+      <left>704</left>
+      <top>348</top>
+      <width>480</width>
+      <height>36</height>
+      <textcolor>FFF0F8FF</textcolor>
+      <font>font13</font>
+      <label>Pairing complete</label>
+    </control>
+
+    <!-- Helper text under steps -->
+    <control type="label" id="9120">
+      <left>660</left>
+      <top>440</top>
+      <width>540</width>
+      <height>30</height>
+      <textcolor>FF7FB3D5</textcolor>
+      <font>font12</font>
+      <label>This screen updates as you progress on your phone.</label>
+    </control>
+
+    <!-- Cancel button (bottom-right). Focusable; not the default focus. -->
+    <control type="button" id="9200">
+      <left>1040</left>
+      <top>620</top>
+      <width>200</width>
+      <height>50</height>
+      <label>Cancel</label>
+      <font>font13</font>
+      <textcolor>FFF0F8FF</textcolor>
+      <focusedcolor>FF00D4FF</focusedcolor>
+      <align>center</align>
+      <texturefocus>special://home/addons/service.kodi.ai/resources/media/btn_focus.png</texturefocus>
+      <texturenofocus>special://home/addons/service.kodi.ai/resources/media/btn_nofocus.png</texturenofocus>
+    </control>
+
+  </controls>
+</window>
