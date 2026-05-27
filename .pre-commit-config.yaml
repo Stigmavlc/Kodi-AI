@@ -9,7 +9,7 @@ repos:
         stages: [pre-commit]
       - id: pytest-integration
         name: pytest integration tests
-        entry: bash -c "source .venv/bin/activate && pytest tests/integration -x --no-cov -m integration || [ $? = 5 ]"
+        entry: bash -c "source .venv/bin/activate && pytest tests/integration -x --no-cov -m integration"
         language: system
         pass_filenames: false
         stages: [pre-commit]

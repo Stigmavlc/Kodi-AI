@@ -304,6 +304,46 @@ def t4_worker_body(bot) -> None:
     except Exception as e:
         xbmc.log(f"[service.kodi.ai] canary error: {e}", xbmc.LOGWARNING)
 
+    # Tool registry probe (Task 11.1): if autoload silently skipped modules
+    # (e.g. an xbmc-dependent import failed at startup), the agent has a
+    # crippled toolbox. Surface in Kodi log so the user can see it via
+    # /diagnostics or kodi.log review.
+    try:
+        _tool_count = len(tool_registry.registry)
+        if _tool_count < 5:
+            xbmc.log(
+                f"[service.kodi.ai] SMOKE: tool registry has only "
+                f"{_tool_count} tools — autoload may have failed",
+                xbmc.LOGWARNING,
+            )
+        else:
+            xbmc.log(
+                f"[service.kodi.ai] SMOKE: tool registry has "
+                f"{_tool_count} tools",
+                xbmc.LOGINFO,
+            )
+    except Exception as e:
+        xbmc.log(
+            f"[service.kodi.ai] SMOKE: tool registry probe FAILED: {e}",
+            xbmc.LOGERROR,
+        )
+
+    # Audit log size warning (Task 11.1): audit_log writes are append-only
+    # so size grows monotonically. Emit a warning past 10 MB so the user
+    # can trigger rotation manually until automatic rotation lands.
+    try:
+        _audit_path = state_paths.profile_path("audit/audit.jsonl")
+        if os.path.exists(_audit_path):
+            _audit_size = os.path.getsize(_audit_path)
+            if _audit_size > 10 * 1024 * 1024:
+                xbmc.log(
+                    f"[service.kodi.ai] SMOKE: audit log is {_audit_size} "
+                    f"bytes — may need rotation",
+                    xbmc.LOGWARNING,
+                )
+    except Exception:
+        pass
+
     # health + recovery: these modules may not yet exist (Phase 11/12 tasks).
     # Wrap each so missing modules don't kill boot.
     try:

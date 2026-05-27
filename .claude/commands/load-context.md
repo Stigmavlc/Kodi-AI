@@ -45,10 +45,10 @@ cd "/Users/ivan/Desktop/Web Development  Projects/Completed By Me/Kodi-AI" && gi
 Block 2 (Python + tests; single chained invocation so the venv activation persists):
 
 ```bash
-cd "/Users/ivan/Desktop/Web Development  Projects/Completed By Me/Kodi-AI" && source .venv/bin/activate && python --version && pytest --version && pytest tests/unit -v --no-cov && (pytest tests/integration -v --no-cov -m integration || [ $? = 5 ])
+cd "/Users/ivan/Desktop/Web Development  Projects/Completed By Me/Kodi-AI" && source .venv/bin/activate && python --version && pytest --version && pytest tests/unit -v --no-cov && pytest tests/integration -v --no-cov -m integration
 ```
 
-The trailing `|| [ $? = 5 ]` mirrors `.pre-commit-config.yaml`'s exit-5 mask. **Note:** this guard is temporary — once Task 11.1 lands and integration tests exist, remove `|| [ $? = 5 ]` from BOTH this command and `.pre-commit-config.yaml`. If you see exit 1 (real test failure) instead of exit 5 (no tests collected), `[ $? = 5 ]` will fail and the command exits non-zero — that's the desired behavior.
+(The previous exit-5 mask `|| [ $? = 5 ]` was removed in Task 11.1 once integration tests landed — now exit-5 means no tests collected, which is a real failure and should bubble up.)
 
 Report any unexpected results.
 
