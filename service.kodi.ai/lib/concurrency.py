@@ -329,6 +329,35 @@ class ActiveCalls:
                 union |= targets
             return union
 
+    def last_window_targets(self) -> _AddonTargets:
+        """Returns the union of target_addons from the most recently closed
+        tools' lingers (within the last 5 seconds), plus any currently-active
+        tools' targets. Used by log_watcher to evaluate buffered lines
+        post-window — a buffered line's addon is "ours" if it falls in this
+        union (and should be discarded as a side-effect).
+
+        Spec: §1.3.
+        """
+        with self._lock:
+            now = time.monotonic()
+            union: set[str] = set()
+            # Recently-expired lingers (deliberately NOT purging — we want
+            # to see targets from windows that closed in the last 5s).
+            for (kind, _ident), (expiry, targets) in self._linger.items():
+                if kind != "tool" or targets is None:
+                    continue
+                if expiry > now - 5.0:
+                    if targets == "ALL":
+                        return "ALL"
+                    union |= targets
+            # Also include currently-active tools (in case a new window
+            # started before we drained).
+            for targets in self._active_tools.values():
+                if targets == "ALL":
+                    return "ALL"
+                union |= targets
+            return union
+
 
 # Module-level instance used by T4 (reasoner / tool dispatch)
 active_calls = ActiveCalls()

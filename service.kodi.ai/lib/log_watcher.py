@@ -17,7 +17,7 @@ import xbmcvfs
 
 from .concurrency import (
     abort_event, work_queue, enqueue, LogIncident,
-    coalesce_lock, active_cluster_ids, active_calls,
+    coalesce_lock, active_cluster_ids, active_calls, drop_counter,
 )
 from . import prefilter, state_paths
 
@@ -39,7 +39,9 @@ IDLE_TICKS_THRESHOLD = 40  # ~30s @ 750ms
 
 class LogWatcher:
     def __init__(self, *, poll_active_ms: int = 750, poll_idle_ms: int = 2500,
-                 quiescence_window_s: float = 3.0):
+                 quiescence_window_s: float = 3.0,
+                 buffer_max_lines: int = 5000,
+                 buffer_max_bytes: int = 5 * 1024 * 1024):
         self.poll_active_ms = poll_active_ms
         self.poll_idle_ms = poll_idle_ms
         self.quiescence_window_s = quiescence_window_s
@@ -48,6 +50,13 @@ class LogWatcher:
         self._first_line_ts_cache: str | None = None
         self._open_clusters: dict[str, dict] = {}  # cluster_id → {lines, first_seen, last_seen, addon}
         self._ticks_since_growth = 0
+        # Per-tool-boundary buffer (Task 4.6-REVISED, spec §1.3)
+        self.buffer_max_lines = buffer_max_lines
+        self.buffer_max_bytes = buffer_max_bytes
+        self._window_buffer: list[tuple[datetime, str, str | None, str, str]] = []
+        # tuple: (ts, raw_line, addon, level, body)
+        self._window_buffer_bytes = 0
+        self._was_active_last_tick = False
 
     def _peek_first_line(self, path: str) -> str | None:
         try:
@@ -139,12 +148,13 @@ class LogWatcher:
                 continue
             if prefilter.is_benign(body):
                 continue
-            # Reasoner-loop guard: drop lines during active windows whose
-            # addon matches our active target_addons (refined in Task 4.7).
+            # Reasoner-loop guard (Task 4.6-REVISED, spec §1.3): during active
+            # windows, BUFFER the line for per-tool-boundary post-window
+            # evaluation (do NOT discard at ingest time — foreign-addon
+            # errors must still surface as new incidents).
             if active_calls.is_active():
-                targets = active_calls.get_active_target_addons()
-                if targets == "ALL" or (addon and addon in targets):
-                    continue  # likely our own side-effect
+                self._buffer_line(raw_line=line, addon=addon, level=level, body=body)
+                continue
             cid = prefilter.cluster_id_for(body)
             now = datetime.now(timezone.utc)
             cluster = self._open_clusters.setdefault(cid, {
@@ -154,6 +164,80 @@ class LogWatcher:
             cluster["lines"].append(line)
             cluster["last_seen"] = now
             cluster["occurrences"] += 1
+
+    def _buffer_line(self, raw_line: str, addon: str | None, level: str, body: str) -> None:
+        """Buffer a line that arrived during an active reasoner window.
+        Per spec §1.3, post-window evaluation decides surface vs. discard."""
+        line_bytes = len(raw_line.encode("utf-8"))
+        # Overflow handling: drop oldest until under cap; emit synthetic if dropped
+        dropped_any = False
+        while (len(self._window_buffer) >= self.buffer_max_lines
+               or self._window_buffer_bytes + line_bytes > self.buffer_max_bytes):
+            if not self._window_buffer:
+                break
+            _, old_raw, *_ = self._window_buffer.pop(0)
+            self._window_buffer_bytes -= len(old_raw.encode("utf-8"))
+            dropped_any = True
+        if dropped_any:
+            self._emit_overrun_synthetic()
+        self._window_buffer.append(
+            (datetime.now(timezone.utc), raw_line, addon, level, body)
+        )
+        self._window_buffer_bytes += line_bytes
+
+    def _emit_overrun_synthetic(self) -> None:
+        """Emit a synthetic 'buffer overrun' LogIncident so the operator can
+        see we silently dropped post-window-eval candidates."""
+        now = datetime.now(timezone.utc)
+        try:
+            enqueue(LogIncident(
+                cluster_id=f"buf_overrun_{int(now.timestamp())}",
+                first_seen=now, last_seen=now, occurrences=1,
+                raw_lines=["post-window eval skipped: buffer overrun (5MB/5000-line cap)"],
+                severity_hint="ERROR", likely_addon=None, likely_action=None,
+                backdated=False, from_previous_session=False, triage_deferred=True,
+            ))
+        except Exception:
+            drop_counter.inc()
+
+    def _evaluate_buffer_post_window(self) -> None:
+        """Evaluate buffered lines per spec §1.3 per-tool-boundary rule.
+        Uses active_calls.last_window_targets() to identify which addons
+        are "ours" (currently-active tools + lingers within last 5s):
+          - target-addon line  → drop (our side-effect)
+          - foreign-addon line → surface as new LogIncident
+
+        Runs every tick (post-close). Foreign-addon errors surface
+        promptly even while we're mid-fix on a different addon. Buffer
+        is fully drained on each call (idempotent).
+        """
+        if not self._window_buffer:
+            return
+        recent_targets = active_calls.last_window_targets()
+        clusters: dict[str, dict] = {}
+        for ts, raw, addon, level, body in self._window_buffer:
+            if recent_targets == "ALL" or (addon and addon in recent_targets):
+                continue  # target-addon line → discard
+            cid = prefilter.cluster_id_for(body)
+            c = clusters.setdefault(cid, {
+                "lines": [], "first": ts, "last": ts,
+                "addon": addon, "level": level,
+            })
+            c["lines"].append(raw)
+            c["last"] = ts
+        for cid, c in clusters.items():
+            try:
+                enqueue(LogIncident(
+                    cluster_id=cid, first_seen=c["first"], last_seen=c["last"],
+                    occurrences=len(c["lines"]), raw_lines=c["lines"],
+                    severity_hint=c["level"], likely_addon=c["addon"],
+                    likely_action=None, backdated=False,
+                    from_previous_session=False, triage_deferred=True,
+                ))
+            except Exception:
+                drop_counter.inc()
+        self._window_buffer.clear()
+        self._window_buffer_bytes = 0
 
     def _close_expired_clusters(self) -> None:
         now = datetime.now(timezone.utc)
@@ -180,6 +264,8 @@ class LogWatcher:
             except Exception:
                 # work_queue.Full or similar — drop counter handled in Task 4.7
                 pass
+        # Per-tool-boundary buffer eval runs every tick (spec §1.3)
+        self._evaluate_buffer_post_window()
 
     def run(self) -> None:
         # Wait for service to finish startup before tailing
@@ -189,7 +275,7 @@ class LogWatcher:
             chunk = self._read_new_bytes()
             if chunk:
                 self._ingest_chunk(chunk)
-            self._close_expired_clusters()
+            self._close_expired_clusters()  # also runs buffer eval (spec §1.3)
             cadence_ms = self._current_cadence_ms()
             if abort_event.wait(cadence_ms / 1000.0):
                 return
