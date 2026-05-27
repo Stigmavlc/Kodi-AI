@@ -151,6 +151,62 @@ def main(argv: list[str] | None = None) -> int:
             '<p>Kodi-AI add-on repository. <a href="../">Project README</a>.</p>'
         )
 
+    # 6. Friendly landing page at dist/index.html with direct download links
+    repo_zip_name = os.path.basename(repo_zip)
+    landing_html = f'''<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Kodi-AI</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  body {{ font-family: -apple-system, system-ui, sans-serif; max-width: 640px;
+         margin: 40px auto; padding: 0 20px; line-height: 1.55; color: #1d2129; }}
+  h1 {{ font-size: 1.8em; margin-bottom: 0.2em; }}
+  .sub {{ color: #5a6772; margin-top: 0; }}
+  .btn {{ display: inline-block; padding: 12px 18px; margin: 8px 8px 8px 0;
+          background: #00a2db; color: #fff; text-decoration: none; border-radius: 6px;
+          font-weight: 600; }}
+  .btn.alt {{ background: #4a4f5e; }}
+  ol {{ padding-left: 1.4em; }}
+  code {{ background: #f1f3f5; padding: 1px 5px; border-radius: 3px; }}
+  hr {{ border: 0; border-top: 1px solid #e5e7eb; margin: 32px 0; }}
+  a {{ color: #00a2db; }}
+</style>
+</head>
+<body>
+<h1>Kodi-AI</h1>
+<p class="sub">AI-assisted Kodi diagnostics + auto-fix, surfaced over Telegram.</p>
+
+<p><b>Quick install</b> (recommended path — Kodi 21 Omega on Android TV):</p>
+<a class="btn" href="{repo_zip_name}">Download repository zip ({version})</a>
+<a class="btn alt" href="service.kodi.ai-{version}.zip">Or just the add-on zip</a>
+
+<ol>
+<li>Download the repository zip above to your phone/computer.</li>
+<li>Transfer to your Shield Pro (USB or Downloads folder).</li>
+<li>Kodi: <b>Settings &rarr; System &rarr; Add-ons &rarr; Unknown sources</b> (enable).</li>
+<li>Kodi: <b>Add-ons &rarr; Install from zip file &rarr;</b> select the repository zip.</li>
+<li>Kodi: <b>Add-ons &rarr; Install from repository &rarr; Kodi-AI Repository &rarr; Services &rarr; Kodi-AI &rarr; Install</b>.</li>
+<li>Kodi: <b>Programs &rarr; Kodi-AI</b> &rarr; setup wizard (OpenRouter key + Telegram bot from
+    <a href="https://t.me/BotFather">@BotFather</a> + pair via QR).</li>
+</ol>
+
+<p>The repository auto-updates: every push to <code>main</code> rebuilds and republishes here in &lt;30 seconds.</p>
+
+<hr>
+<p>
+  <a href="https://github.com/Stigmavlc/Kodi-AI">GitHub repo</a> &nbsp;|&nbsp;
+  <a href="https://github.com/Stigmavlc/Kodi-AI/blob/main/README.md">README</a> &nbsp;|&nbsp;
+  <a href="https://github.com/Stigmavlc/Kodi-AI/blob/main/PRIVACY.md">Privacy</a> &nbsp;|&nbsp;
+  <a href="repo/addons.xml">addons.xml</a>
+</p>
+</body>
+</html>
+'''
+    with open(os.path.join(out_dir, "index.html"), "w", encoding="utf-8") as f:
+        f.write(landing_html)
+
     print("\nDone. Install order on Kodi:")
     print(f"  1. Install repository.kodi-ai zip first: {os.path.basename(repo_zip)}")
     print(f"  2. Then Add-ons -> Install from repository -> {REPO_NAME} -> Services -> Kodi-AI")
