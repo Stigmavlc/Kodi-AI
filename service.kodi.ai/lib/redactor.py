@@ -121,21 +121,27 @@ def should_redact_value(addon_id: str, key: str, value: Any) -> bool:
 def canary_self_test() -> tuple[bool, list[str]]:
     """Run redactor on canary string with all known secret patterns.
     Returns (ok, leaked_patterns)."""
+    # Each test case is on its own line so the Authorization regex
+    # (which consumes [^\r\n]+) cannot greedily swallow subsequent
+    # patterns and mask them from observation. All 10 _PATTERNS entries
+    # must be independently observable for the tripwire to be sound.
     canary_input = (
-        "tg=1234567890:ABCdefGHIjklMNOpqrSTUvwxYZabcdefgHIjkl "
-        "or=sk-or-v1-abc123def456ghi789jklmnopqrstuvwx "
-        "openai=sk-abc123def456ghi789jklmnopqrstuvwx "
-        "jwt=eyJhbGciOiJIUzI1NiIs.eyJzdWIiOiIxMjM0NTY3.SflKxwRJSMeKKF2QT4f "
-        "bearer=Bearer abc123def456ghi789jklmnopqrstuvwx "
-        "Authorization: Bearer secret-here-123 "
-        "Set-Cookie: session=abc123; HttpOnly "
-        "url=https://user:pass@host/x "
+        "tg=1234567890:ABCdefGHIjklMNOpqrSTUvwxYZabcdefgHIjkl\n"
+        "or=sk-or-v1-abc123def456ghi789jklmnopqrstuvwx\n"
+        "ant=sk-ant-api03-abcdefghijklmnopqrstuvwxyz1234567890\n"
+        "openai=sk-abc123def456ghi789jklmnopqrstuvwx\n"
+        "jwt=eyJhbGciOiJIUzI1NiIs.eyJzdWIiOiIxMjM0NTY3.SflKxwRJSMeKKF2QT4f\n"
+        "bearer=Bearer abc123def456ghi789jklmnopqrstuvwx\n"
+        "Authorization: Bearer secret-here-123\n"
+        "Set-Cookie: session=abc123; HttpOnly\n"
+        "url=https://user:pass@host/x\n"
         "?token=long-secret-value-12345"
     )
     out = redact(canary_input)
     leaked = []
     for raw in ["1234567890:ABCdefGHIjklMNOpqrSTUvwxYZabcdefgHIjkl",
                 "sk-or-v1-abc123def456ghi789jklmnopqrstuvwx",
+                "sk-ant-api03-abcdefghijklmnopqrstuvwxyz1234567890",
                 "sk-abc123def456ghi789jklmnopqrstuvwx",
                 "eyJhbGciOiJIUzI1NiIs.eyJzdWIiOiIxMjM0NTY3.SflKxwRJSMeKKF2QT4f",
                 "abc123def456ghi789jklmnopqrstuvwx",
