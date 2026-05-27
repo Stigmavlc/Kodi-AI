@@ -1,9 +1,9 @@
 # Kodi-AI V1 — Session Handover
 
-**Last updated:** 2026-05-27 (in-session: Phases 1-3 COMPLETE + Tasks 4.1-4.5 done, reviewer-vetted)
+**Last updated:** 2026-05-27 (in-session: Phases 1-3 COMPLETE + Tasks 4.1-4.6-REV done, reviewer-vetted)
 **Project root:** `/Users/ivan/Desktop/Web Development  Projects/Completed By Me/Kodi-AI/`
 **Git branch:** `main`
-**Latest commit:** `1c420d1` (feat(log_watcher): 3-signal rotation + 1MB cap + adaptive cadence)
+**Latest commit:** `decd7a6` (fix(log_watcher): buffer-and-evaluate per-tool-boundary (C5))
 
 This document tracks **exactly what's left to implement**, by phase and by task, so any future session can pick up cleanly. It is read by the `/load-context` slash command at session start and updated by `/save-context` at session end.
 
@@ -86,7 +86,7 @@ Per task, the plan's own task ID maps to a line range in `docs/superpowers/plans
 | 4.3 `lib/prefilter.py` (signature normalization + benign allowlist) | ✅ done | `af8c30b`. Spec §1.4. Plan-verbatim, ZERO deviations. 112/112 unit tests pass. Both reviewers CLEAN. |
 | 4.4 `lib/log_watcher.py` core (poll/parse/cluster/enqueue) | ✅ done | `7c6ae8e`. Spec §1.4, §3.1. Plan-verbatim, ZERO deviations. 112 unit + 1 integration test pass. First `@pytest.mark.integration` test (~5s). Both reviewers CLEAN. |
 | 4.5 log_watcher 3-signal rotation + 1MB cap + adaptive cadence | ✅ done | `1c420d1`. Spec §1.4. ONE justified deviation: moved `_ticks_since_growth` bookkeeping from `run()` into `_read_new_bytes()` to satisfy plan-locked test that calls `_read_new_bytes()` directly. 4 integration + 112 unit tests pass in isolation. Both reviewers CLEAN. Pre-existing test pollution between suites confirmed (see §4 #77). |
-| **4.6-REVISED** log_watcher buffer-and-evaluate per-tool-boundary | ⏸ pending | Spec §1.3, §1.5. **Round-1 plan-review fix C5.** Supersedes original 4.6. Requires `ActiveCalls.last_window_targets()` from Task 1.5. |
+| **4.6-REVISED** log_watcher buffer-and-evaluate per-tool-boundary | ✅ done | `decd7a6`. Spec §1.3 round-1 fix point 2. 4 declared deviations all reviewer-accepted as justified/equivalent/necessary. Added `last_window_targets()` to ActiveCalls (resolves §4 #23 + #24). 112 unit + 7 integration pass. Both reviewers CLEAN. |
 | **4.7-REVISED** log_watcher boot post-mortem per-session state machine + tool-history-match | ⏸ pending | Spec §1.4. **Round-1 plan-review fix H7 + round-2 fix.** Requires `tool_history[].output_signature` from Task 5.4-AMENDMENT. |
 
 ### Phase 5 — Triage + reasoner state + reasoner + amendments (7 tasks: 5 base + REVISED 5.4 + AMENDMENT 5.4 + new 5.6)
@@ -330,6 +330,18 @@ These are issues caught by reviewers during Phase 0 that are NOT yet fixed and s
 77. **🔧 PRE-EXISTING TEST POLLUTION: unit-then-integration ordering breaks `state_paths.xbmcvfs` binding** (Task 4.5 verified by reverting to `7c6ae8e`): when `pytest` runs unit tests BEFORE integration tests in the same invocation, integration tests fail because `state_paths.xbmcvfs` is bound to a unit-test `MagicMock` (via the test re-bind pattern documented in §15). monkeypatch teardown doesn't restore the original because `state_paths` module is already imported and cached. Effect: `pytest --no-cov` (full suite) shows 3+ integration failures, but each suite passes when run in isolation. Pre-commit hook runs them separately so commits succeed. **Action: add a unit-test teardown that resets `state_paths.xbmcvfs` to the original `xbmcvfs` module reference**, OR have integration `conftest.py`'s `reset_fake_fs` fixture also re-bind `state_paths.xbmcvfs` to the integration fake (more robust). Implement at Task 11.1 startup smoke tests OR sooner if more cross-suite failures surface.
 
 78. **`log_watcher` rotation Signal 2 (inode) + Signal 3 (first-line ts) lack dedicated unit tests** (Task 4.5 code review, plan-locked): only Signal 1 (size shrink) directly tested. Signals 2 + 3 exercised only via rotation-recovery path. Plan-locked test set; consider adding hardening tests in a future task.
+
+79. **🔧 PLAN INTERNAL INCONSISTENCY — Task 4.6-REVISED prose vs tests** (Task 4.6-REVISED reviews): plan prose says `_evaluate_buffer_post_window` should early-return when `active_calls.is_active()`, but plan test 1 calls `_close_expired_clusters` while is_active() is True and asserts foreign-addon line surfaces. Plan is self-contradictory. Implementer chose to honor tests (TDD discipline) → removed early-return guard. **Action: amend plan §4.6-REVISED prose to match implemented continuous-eval behavior.**
+
+80. **`_evaluate_buffer_post_window` doesn't strictly honor "lines held until ALL covering windows expire" spec §1.3 rule** (Task 4.6-REVISED forward-looking): continuous eval surfaces foreign-addon lines IMMEDIATELY rather than at boundary. For V1 single-user sequential tool use this is acceptable (arguably better UX). Edge case: overlapping tool windows could surface a line while a later window would have covered it. Revisit at Task 4.7-REVISED (the `_was_active_last_tick` attribute is the forward-compat hook).
+
+81. **`_emit_overrun_synthetic` cluster_id collision** (Task 4.6-REVISED code review, plan-locked): uses `f"buf_overrun_{int(now.timestamp())}"` — second-resolution timestamp. Multiple overruns in same second produce identical cluster_id → no dedup. Operator would receive repeated identical alerts. Plan-literal behavior; add sequence counter or fractional-second resolution in future hardening.
+
+82. **`_evaluate_buffer_post_window` lacks `active_cluster_ids` dedup** (Task 4.6-REVISED code review, plan-locked): if a foreign-addon line clusters into the same cid as a recently-enqueued open-cluster, duplicate enqueue is possible. Niche case; plan-locked.
+
+83. **conftest.py integration fixtures access ActiveCalls private internals** (Task 4.6-REVISED code review): `_lock`, `_active_tools`, `_active_sessions`, `_linger` accessed for state reset. Fragile if ActiveCalls is refactored. Cleaner approach: add `ActiveCalls.reset()` method.
+
+84. **§4 #23 and #24 RESOLVED by Task 4.6-REVISED:** `last_window_targets()` is now defined on `ActiveCalls`. (Kept as historical entries.)
 
 ---
 
