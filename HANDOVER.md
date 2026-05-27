@@ -1,9 +1,9 @@
 # Kodi-AI V1 — Session Handover
 
-**Last updated:** 2026-05-27 (in-session: Phases 1-4 COMPLETE, reviewer-vetted)
+**Last updated:** 2026-05-27 (in-session: Phases 1-4 COMPLETE + Task 5.1 done, reviewer-vetted)
 **Project root:** `/Users/ivan/Desktop/Web Development  Projects/Completed By Me/Kodi-AI/`
 **Git branch:** `main`
-**Latest commit:** `64654ec` (fix(log_watcher): wire burst-mode into run() + reset _lag_streak + restore xbmc.log)
+**Latest commit:** `733a1e3` (feat(triage): TokenBucket + cheap-LLM classify)
 
 This document tracks **exactly what's left to implement**, by phase and by task, so any future session can pick up cleanly. It is read by the `/load-context` slash command at session start and updated by `/save-context` at session end.
 
@@ -93,7 +93,7 @@ Per task, the plan's own task ID maps to a line range in `docs/superpowers/plans
 
 | Task | Status | Notes |
 |---|---|---|
-| 5.1 `lib/triage.py` (TokenBucket + cheap-LLM classify) | ⏸ pending | Spec §1.6 |
+| 5.1 `lib/triage.py` (TokenBucket + cheap-LLM classify) | ✅ done | `733a1e3`. Spec §1.6. Plan-verbatim, ZERO deviations. 117/117 unit tests pass. Both reviewers CLEAN. |
 | 5.2 `lib/reasoner_state.py` (SessionState dataclass + atomic write + load + list_all) | ⏸ pending | Spec §1.7, §5.7. **SessionState.tool_history schema** documented in Task 5.4-AMENDMENT. |
 | 5.3 `lib/reasoner.py` skeleton (Reasoner class + run_simple) | ⏸ pending | Spec §1.6, §1.7, §3.1, §3.3 |
 | **5.4-REVISED** Reasoner uses `chat_stream` + per-chunk mid-stream budget check | ⏸ pending | Spec §1.10, §5.5. **Round-1 plan-review fix C3.** Synthetic envelope on mid-stream trip. |
