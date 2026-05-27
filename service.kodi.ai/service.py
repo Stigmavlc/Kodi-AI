@@ -1,11 +1,14 @@
 """Kodi-AI service entry point. 4-thread architecture per spec §1.1, §1.2.
 
 Threads:
-  Main: Kodi's xbmc.Monitor — waits for abortRequested(), then signals shutdown.
+  Main: KodiAiMonitor (xbmc.Monitor) — waits for abortRequested(), relays
+        onSettingsChanged() to T4.
   T2:   LogWatcher (lib/log_watcher.py)  — polls kodi.log, enqueues incidents.
   T3:   TelegramBot.run (lib/telegram/bot.py) — long-poll for user messages.
+        Started on-demand by BotHolder when bot_token is first validated.
   T4:   t4_worker_body (this file) — drains work_queue, dispatches to handlers,
-        emits heartbeats.
+        emits heartbeats, handles SettingsChanged (bot_token validation + T3
+        start).
 
 Boot ordering (spec §1.1):
   1. T4 starts and runs the boot pass (ensure_dirs, atomic-rename smoke probe,
@@ -17,6 +20,13 @@ Shutdown (spec §1.2):
   abort_event.set() → health.record_clean_shutdown() → audit shutdown →
   push sentinel on work_queue → join T2 (3s) / T3 (15s) / T4 (5s) →
   log_capture.uninstall().
+
+v0.3.0 settings-inline setup:
+  bot_token is typed via the Configure dialog (NOT a wizard). KodiAiMonitor
+  posts SettingsChanged to T4 whenever the user OKs the dialog. T4 reads
+  the new bot_token from Kodi settings, validates via Telegram getMe,
+  copies to secrets.json, clears the plaintext copy in Kodi settings,
+  and starts T3 via BotHolder if not already running.
 
 Spec: §1.1, §1.2, §1.14, §2, §3.1, §3.3, §5.7, §7.2, §7.3.
 """
@@ -37,6 +47,8 @@ from lib import secrets as lib_secrets
 from lib import redactor, log_watcher, triage
 from lib import reasoner as reasoner_mod
 from lib import reasoner_state, pause_sequence
+from lib.bot_holder import BotHolder
+from lib.setup_monitor import KodiAiMonitor
 from lib.concurrency import (
     abort_event,
     startup_complete_event,
@@ -47,9 +59,10 @@ from lib.concurrency import (
     LogIncident,
     UserMsg,
     ResumeWork,
+    SettingsChanged,
 )
 from lib.llm import client as llm_client, router as llm_router_mod, budget as llm_budget
-from lib.telegram import bot as telegram_bot_mod, auth as tg_auth, formatters as tg_fmt
+from lib.telegram import auth as tg_auth, formatters as tg_fmt
 import lib.tools  # noqa: F401 — triggers @tool autoload
 from lib.tools import registry as tool_registry
 
@@ -101,7 +114,7 @@ def _get_reasoner(api_key: str):
 
 # ---- T4 handlers (Task 10.3 — inlined per design) ----
 
-def _handle_incident(incident: LogIncident, bot) -> None:
+def _handle_incident(incident: LogIncident, bot_holder: BotHolder) -> None:
     """LogIncident → triage → CRITICAL: reasoner with tools."""
     api_key = lib_secrets.get_secret("openrouter_key")
     if not api_key:
@@ -138,12 +151,13 @@ def _handle_incident(incident: LogIncident, bot) -> None:
         task_class="t2_reason",
         session_id=session_id,
     )
-    _handle_outcome(outcome, bot, session_id, incident.cluster_id)
+    _handle_outcome(outcome, bot_holder.get(), session_id, incident.cluster_id)
 
 
-def _handle_user_msg(msg: UserMsg, bot) -> None:
+def _handle_user_msg(msg: UserMsg, bot_holder: BotHolder) -> None:
     """UserMsg → chat-mode reasoner. Echoes config errors back to user."""
     api_key = lib_secrets.get_secret("openrouter_key")
+    bot = bot_holder.get()
     if not api_key:
         if bot is not None:
             try:
@@ -161,7 +175,7 @@ def _handle_user_msg(msg: UserMsg, bot) -> None:
     _handle_outcome(outcome, bot, session_id, None, target_chat_id=msg.chat_id)
 
 
-def _handle_resume_work(rw: ResumeWork, bot) -> None:
+def _handle_resume_work(rw: ResumeWork, bot_holder: BotHolder) -> None:
     """ResumeWork → look up paused session (memory then disk) → reasoner.resume_from."""
     api_key = lib_secrets.get_secret("openrouter_key")
     if not api_key:
@@ -189,7 +203,7 @@ def _handle_resume_work(rw: ResumeWork, bot) -> None:
     outcome = r.resume_from(
         state=state, user_reply=rw.user_reply, task_class="t2_reason"
     )
-    _handle_outcome(outcome, bot, state.session_id, state.cluster_id)
+    _handle_outcome(outcome, bot_holder.get(), state.session_id, state.cluster_id)
 
 
 def _handle_outcome(outcome, bot, session_id: str, cluster_id, target_chat_id=None) -> None:
@@ -274,12 +288,299 @@ def _handle_outcome(outcome, bot, session_id: str, cluster_id, target_chat_id=No
                 pass
 
 
+# ---- SettingsChanged handler (v0.3.0 inline-setup flow) ----
+
+
+def _compute_status_display() -> str:
+    """Return the right status_display label for the current configuration.
+
+    Decision tree:
+      bot_token missing               → "⚠ Not configured"
+      bot_token present, no allowlist → "⚠ Bot verified — send /start to @<u>"
+      paired, no openrouter_key       → "⚠ Paired — waiting for OpenRouter key"
+      paired + key, no mode           → "⚠ Paired — pick agent mode in Telegram"
+      everything set                  → "✓ Active — monitoring Kodi logs"
+    """
+    has_bot = bool(lib_secrets.get_secret("bot_token"))
+    if not has_bot:
+        return "⚠ Not configured"
+    allowlist = tg_auth.chat_allowlist()
+    if not allowlist:
+        username = settings.get_string("bot_username", "") or ""
+        if username and not username.startswith("("):
+            return f"⚠ Bot verified — send /start to @{username}"
+        return "⚠ Bot verified — pair in Telegram"
+    has_key = bool(lib_secrets.get_secret("openrouter_key"))
+    if not has_key:
+        return "⚠ Paired — waiting for OpenRouter key"
+    mode = settings.get_string("mode", "") or ""
+    if not mode:
+        return "⚠ Paired — pick agent mode in Telegram"
+    return "✓ Active — monitoring Kodi logs"
+
+
+def _refresh_status_label() -> None:
+    """Recompute + persist status_display. Idempotent and cheap."""
+    try:
+        new_status = _compute_status_display()
+        cur = settings.get_string("status_display", "")
+        if cur != new_status:
+            settings.set_string("status_display", new_status)
+    except Exception as e:
+        xbmc.log(
+            f"[service.kodi.ai] refresh_status_label failed: {e}",
+            xbmc.LOGWARNING,
+        )
+
+
+def _handle_settings_changed(bot_holder: BotHolder, state: dict) -> None:
+    """Process a SettingsChanged event.
+
+    `state` is a mutable dict owned by t4_worker_body that persists across
+    invocations. Used keys:
+      last_known_bot_token (str): most recent validated bot_token, so we
+        only re-validate when the user actually changed it.
+
+    Flow:
+      1. Invalidate the settings cache.
+      2. Read bot_token from Kodi settings.
+      3. If bot_token unchanged or empty → just refresh status_display + return.
+      4. If bot_token changed: call getMe → if valid, copy to secrets, clear
+         Kodi settings copy, refresh derived display fields, start T3.
+         If invalid: set status to error. Keep user input (so they can fix it).
+    """
+    # 1. Cache invalidation — sees fresh values for everything below.
+    try:
+        settings.invalidate_cache()
+    except Exception:
+        pass
+
+    # 2. Read bot_token from KODI settings (NOT secrets — the user just
+    # typed this into the Configure dialog, it hasn't moved to secrets.json
+    # yet). On error / missing, default to "".
+    try:
+        import xbmcaddon  # imported lazily so unit tests can stub it.
+        kodi_bot_token = (
+            xbmcaddon.Addon("service.kodi.ai").getSetting("bot_token") or ""
+        ).strip()
+    except Exception as e:
+        xbmc.log(
+            f"[service.kodi.ai] settings_changed: read bot_token failed: {e}",
+            xbmc.LOGWARNING,
+        )
+        kodi_bot_token = ""
+
+    last = state.get("last_known_bot_token", "")
+
+    # 3. Token unchanged or empty — just refresh status (other fields may
+    # have moved, e.g. allowlist after pairing).
+    if not kodi_bot_token or kodi_bot_token == last:
+        # If the secret already has the bot_token, no validation needed —
+        # state changes elsewhere (pairing, openrouter_key set) just need
+        # the derived display refreshed.
+        _refresh_status_label()
+        return
+
+    # 4. New bot token typed — validate via direct getMe call.
+    state["last_known_bot_token"] = kodi_bot_token
+    try:
+        import requests
+        r = requests.get(
+            f"https://api.telegram.org/bot{kodi_bot_token}/getMe",
+            timeout=10,
+        )
+        status_code = r.status_code
+        try:
+            body = r.json()
+        except Exception:
+            body = {}
+    except requests.exceptions.RequestException as e:
+        xbmc.log(
+            f"[service.kodi.ai] settings_changed: getMe network error: {e}",
+            xbmc.LOGWARNING,
+        )
+        # Network error — keep user input, advise retry.
+        try:
+            settings.set_string(
+                "status_display",
+                "⚠ Could not reach Telegram — retry later",
+            )
+        except Exception:
+            pass
+        try:
+            import xbmcgui
+            xbmcgui.Dialog().notification(
+                "Kodi-AI", "Telegram unreachable, will retry", time=5000,
+            )
+        except Exception:
+            pass
+        return
+    except Exception as e:
+        xbmc.log(
+            f"[service.kodi.ai] settings_changed: getMe failed: {e}",
+            xbmc.LOGERROR,
+        )
+        return
+
+    # HTTP 4xx → invalid token (most commonly 401).
+    if not body.get("ok") or status_code >= 400:
+        xbmc.log(
+            f"[service.kodi.ai] settings_changed: bot token invalid "
+            f"(status={status_code}, body={body})",
+            xbmc.LOGWARNING,
+        )
+        try:
+            settings.set_string(
+                "status_display",
+                "✗ Invalid bot token — check the token from BotFather",
+            )
+        except Exception:
+            pass
+        try:
+            import xbmcgui
+            xbmcgui.Dialog().notification(
+                "Kodi-AI", "Bot token invalid", time=5000,
+            )
+        except Exception:
+            pass
+        return
+
+    # Valid! Extract username (used in pairing_command + status).
+    username = (body.get("result") or {}).get("username", "") or ""
+
+    # Promote bot_token: secrets.json (source of truth) + clear Kodi setting
+    # (security hardening — prevents the plaintext token from sitting in
+    # Kodi's settings XML where a snapshot/backup might pick it up).
+    try:
+        lib_secrets.set_secret("bot_token", kodi_bot_token)
+    except Exception as e:
+        xbmc.log(
+            f"[service.kodi.ai] settings_changed: set_secret bot_token failed: {e}",
+            xbmc.LOGERROR,
+        )
+    try:
+        import xbmcaddon
+        xbmcaddon.Addon("service.kodi.ai").setSetting("bot_token", "")
+        # Also invalidate our cache copy so subsequent reads see the empty
+        # Kodi value (we deliberately cleared it).
+        settings.invalidate_cache()
+    except Exception as e:
+        xbmc.log(
+            f"[service.kodi.ai] settings_changed: clear Kodi bot_token failed: {e}",
+            xbmc.LOGWARNING,
+        )
+
+    # Save the auto-detected username for display + pairing command.
+    if username:
+        try:
+            settings.set_string("bot_username", username)
+        except Exception:
+            pass
+
+    # Fresh setup_secret for pairing.
+    try:
+        secret = tg_auth.generate_setup_secret()
+    except Exception as e:
+        xbmc.log(
+            f"[service.kodi.ai] settings_changed: generate_setup_secret failed: {e}",
+            xbmc.LOGERROR,
+        )
+        secret = ""
+
+    # Update pairing_command label (read-only setting the user sees in the
+    # Configure dialog).
+    try:
+        if username and secret:
+            settings.set_string(
+                "pairing_command",
+                f"/start {secret} to @{username}",
+            )
+        elif secret:
+            settings.set_string("pairing_command", f"/start {secret}")
+    except Exception:
+        pass
+
+    # Update status.
+    try:
+        if username:
+            settings.set_string(
+                "status_display",
+                f"⚠ Bot verified — send /start to @{username}",
+            )
+        else:
+            settings.set_string(
+                "status_display", "⚠ Bot verified — pair in Telegram",
+            )
+    except Exception:
+        pass
+
+    # Start T3 long-poll on demand (idempotent — set_token_and_start is a
+    # no-op if already running with the same bot).
+    try:
+        bot_holder.set_token_and_start(kodi_bot_token)
+    except Exception as e:
+        xbmc.log(
+            f"[service.kodi.ai] settings_changed: start T3 failed: {e}",
+            xbmc.LOGERROR,
+        )
+
+    # Toast.
+    try:
+        import xbmcgui
+        toast_text = (
+            f"Bot verified — send /start to @{username}"
+            if username
+            else "Bot verified — pair in Telegram"
+        )
+        xbmcgui.Dialog().notification("Kodi-AI", toast_text, time=5000)
+    except Exception:
+        pass
+
+
+# ---- v0.2.x → v0.3.0 migration helper ----
+
+
+def _migrate_v0_2_x_bot_token() -> None:
+    """One-shot at boot: if residual plaintext bot_token sits in Kodi
+    settings (from v0.2.x where it was a normal setting), move it to
+    secrets.json and clear the plaintext copy.
+
+    Safe to call every boot — short-circuits cleanly when nothing to do.
+    """
+    try:
+        import xbmcaddon
+        residual = (
+            xbmcaddon.Addon("service.kodi.ai").getSetting("bot_token") or ""
+        ).strip()
+        if not residual:
+            return
+        # If we already have a secret bot_token AND it matches the residual,
+        # the only thing left to do is clear the Kodi copy. If they differ,
+        # prefer the user's recent edit (residual) — that's a settings edit
+        # the user actively made.
+        secret_existing = lib_secrets.get_secret("bot_token") or ""
+        if residual and residual != secret_existing:
+            lib_secrets.set_secret("bot_token", residual)
+            xbmc.log(
+                "[service.kodi.ai] v0.3.0 migration: moved bot_token to "
+                "secrets.json",
+                xbmc.LOGINFO,
+            )
+        # Always clear the plaintext copy.
+        xbmcaddon.Addon("service.kodi.ai").setSetting("bot_token", "")
+        settings.invalidate_cache()
+    except Exception as e:
+        xbmc.log(
+            f"[service.kodi.ai] v0.3.0 migration failed: {e}", xbmc.LOGWARNING,
+        )
+
+
 # ---- T4 worker body ----
 
 HEARTBEAT_INTERVAL_S = 300.0
 
 
-def t4_worker_body(bot) -> None:
+def t4_worker_body(bot_holder: BotHolder) -> None:
     """T4 main loop: boot pass → work_queue drain + heartbeat."""
     # Boot pass: each step is wrapped — a single failure must not kill T4.
     try:
@@ -361,6 +662,23 @@ def t4_worker_body(bot) -> None:
     except Exception:
         pass
 
+    # v0.2.x → v0.3.0 migration (one-shot if applicable).
+    _migrate_v0_2_x_bot_token()
+
+    # If a bot_token already exists in secrets (already-paired user, or
+    # post-migration), start T3 right now.
+    try:
+        existing_token = lib_secrets.get_secret("bot_token") or ""
+        if existing_token:
+            bot_holder.set_token_and_start(existing_token)
+    except Exception as e:
+        xbmc.log(
+            f"[service.kodi.ai] boot T3 start failed: {e}", xbmc.LOGERROR,
+        )
+
+    # Set initial status_display based on current state.
+    _refresh_status_label()
+
     # First-launch guidance: if neither OpenRouter key nor bot token is set,
     # show a passive toast so the user knows setup is pending. NEVER auto-
     # opens the wizard (that would be intrusive mid-playback) — just a 5s
@@ -375,7 +693,7 @@ def t4_worker_body(bot) -> None:
             )
             xbmcgui.Dialog().notification(
                 "Kodi-AI",
-                "Setup needed — open from Programs or Settings",
+                "Setup needed — open Configure to begin",
                 icon=_icon_path if os.path.exists(_icon_path) else "",
                 time=6000,
                 sound=False,
@@ -386,6 +704,13 @@ def t4_worker_body(bot) -> None:
 
     startup_complete_event.set()
     xbmc.log("[service.kodi.ai] startup complete", xbmc.LOGINFO)
+
+    # Persistent state for SettingsChanged debouncing.
+    # last_known_bot_token: seeded with whatever's in secrets so a residual
+    # value across restart doesn't trigger spurious revalidation.
+    settings_state: dict = {
+        "last_known_bot_token": lib_secrets.get_secret("bot_token") or "",
+    }
 
     last_heartbeat = time.monotonic()
     from queue import Empty
@@ -402,11 +727,13 @@ def t4_worker_body(bot) -> None:
                     continue
                 try:
                     if isinstance(payload, LogIncident):
-                        _handle_incident(payload, bot)
+                        _handle_incident(payload, bot_holder)
                     elif isinstance(payload, UserMsg):
-                        _handle_user_msg(payload, bot)
+                        _handle_user_msg(payload, bot_holder)
                     elif isinstance(payload, ResumeWork):
-                        _handle_resume_work(payload, bot)
+                        _handle_resume_work(payload, bot_holder)
+                    elif isinstance(payload, SettingsChanged):
+                        _handle_settings_changed(bot_holder, settings_state)
                     else:
                         xbmc.log(
                             f"[service.kodi.ai] unknown payload type: "
@@ -436,16 +763,16 @@ def main() -> None:
     except Exception:
         pass
     try:
-        audit_log.write("startup", details={"version": "0.1.0"})
+        audit_log.write("startup", details={"version": "0.3.0"})
     except Exception:
         pass
 
-    bot_token = lib_secrets.get_secret("bot_token") or ""
-    bot = telegram_bot_mod.TelegramBot(bot_token) if bot_token else None
+    # BotHolder is the single mutable handle T4 / handlers consult.
+    bot_holder = BotHolder()
 
     # T4 first: must run boot pass + set startup_complete_event before T2/T3.
     t4 = threading.Thread(
-        target=t4_worker_body, args=(bot,), name="T4_Worker", daemon=False
+        target=t4_worker_body, args=(bot_holder,), name="T4_Worker", daemon=False
     )
     t4.start()
     startup_complete_event.wait(timeout=60)
@@ -458,17 +785,18 @@ def main() -> None:
     t2 = threading.Thread(target=watcher.run, name="T2_LogPoll", daemon=False)
     t2.start()
 
-    # T3: Telegram bot (only if token configured).
-    t3 = None
-    if bot is not None:
-        t3 = threading.Thread(target=bot.run, name="T3_TGPoll", daemon=False)
-        t3.start()
+    # T3 starts on-demand via BotHolder (either right now during boot if
+    # bot_token already exists in secrets, or later when the user types
+    # one into Kodi settings → SettingsChanged → _handle_settings_changed).
+    # The boot-time start happens inside t4_worker_body BEFORE the work
+    # loop, so by the time main() resumes here, T3 may already be running
+    # (no work needed) or will start later (no work needed).
 
     xbmc.log(
         "[service.kodi.ai] all threads running; entering Monitor loop",
         xbmc.LOGINFO,
     )
-    monitor = xbmc.Monitor()
+    monitor = KodiAiMonitor()
     while not monitor.abortRequested():
         if monitor.waitForAbort(1.0):
             break
@@ -494,6 +822,7 @@ def main() -> None:
 
     if t2 is not None:
         t2.join(timeout=3)
+    t3 = bot_holder.t3_thread()
     if t3 is not None:
         t3.join(timeout=15)
     t4.join(timeout=5)

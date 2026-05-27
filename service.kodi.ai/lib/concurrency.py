@@ -92,7 +92,19 @@ class ResumeWork:
         return False
 
 
-WorkItem = LogIncident | UserMsg | ResumeWork
+@dataclass(frozen=True, order=False)
+class SettingsChanged:
+    """Posted by KodiAiMonitor.onSettingsChanged() (v0.3.0 inline-settings setup).
+
+    Drains via T4 → settings.invalidate_cache() + bot_token detection/validation
+    + on-demand T3 startup. Sort priority 30 (lower than LogIncident/UserMsg/
+    ResumeWork so a flurry of settings edits never blocks real work).
+    """
+    def __lt__(self, other):
+        return False
+
+
+WorkItem = LogIncident | UserMsg | ResumeWork | SettingsChanged
 
 
 # PriorityQueue items are (priority_int, monotonic_seq, payload).
@@ -105,6 +117,7 @@ _PRIORITIES = {
     "ResumeWork": 0,
     "UserMsg": 5,
     "LogIncident": 10,
+    "SettingsChanged": 30,
 }
 
 

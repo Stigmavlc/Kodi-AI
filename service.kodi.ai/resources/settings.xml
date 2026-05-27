@@ -1,21 +1,30 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <settings>
-  <category label="Setup">
-    <setting id="setup_via_phone" type="action" label="📱  Set up via phone  (recommended)" action="RunScript(special://home/addons/service.kodi.ai/default.py,setup_via_phone)"/>
-    <setting id="run_setup_wizard" type="action" label="⌨  Manual setup (TV keyboard)" action="RunScript(special://home/addons/service.kodi.ai/default.py,setup_wizard)"/>
-    <setting id="open_status_panel" type="action" label="📊  Open Status Panel" action="RunScript(special://home/addons/service.kodi.ai/default.py)"/>
+  <category label="Telegram">
+    <setting id="status_display" type="text" label="Status" option="readonly" default="⚠ Not configured"/>
+    <setting type="lsep" label="Step 1: Create your bot"/>
+    <setting id="step1_hint1" type="lsep" label="Open Telegram → message @BotFather"/>
+    <setting id="step1_hint2" type="lsep" label="Send /newbot, follow prompts, copy token"/>
+    <setting id="bot_token" type="text" label="Bot token" option="hidden" default=""/>
+    <setting id="bot_username" type="text" label="Bot username" option="readonly" default="(auto-detected after token)"/>
+    <setting type="lsep" label="Step 2: Pair your phone"/>
+    <setting id="step2_hint1" type="lsep" label="In Telegram, send this to your bot:"/>
+    <setting id="pairing_command" type="text" label="Pairing command" option="readonly" default="(set bot token first)"/>
+    <setting type="lsep" label="Step 3: Finish in Telegram"/>
+    <setting id="step3_hint1" type="lsep" label="The bot will ask for your OpenRouter key"/>
+    <setting id="step3_hint2" type="lsep" label="Get one at openrouter.ai/keys (~$5)"/>
+    <setting id="step3_hint3" type="lsep" label="Then it will ask for agent mode"/>
+    <setting type="lsep" label="Tip: paste from phone"/>
+    <setting id="tip_hint1" type="lsep" label="Install Kore (Android) or Yatse (iOS)"/>
+    <setting id="tip_hint2" type="lsep" label="to type from your phone — much easier"/>
+    <setting id="tip_hint3" type="lsep" label="Enable Kodi → Services → Control → HTTP"/>
+    <setting type="lsep" label="Maintenance"/>
+    <setting id="reset_bot_owner" type="action" label="Reset bot owner" action="RunScript(special://home/addons/service.kodi.ai/default.py,reset_bot)"/>
   </category>
   <category label="General">
     <setting id="enabled" type="bool" label="Enabled" default="true"/>
-    <setting id="openrouter_key" type="text" label="OpenRouter API key" option="hidden" default=""/>
     <setting id="mode" type="enum" label="Mode" values="auto|manual" default="auto"/>
     <setting id="manual_model" type="text" label="Manual mode model ID" default="" enable="eq(-1,1)"/>
-  </category>
-  <category label="Telegram">
-    <setting id="bot_token" type="text" label="Bot token" option="hidden" default=""/>
-    <setting id="bot_username" type="text" label="Bot username (without @)" default=""/>
-    <setting id="reset_bot_owner" type="action" label="Reset bot owner" action="RunScript(special://home/addons/service.kodi.ai/default.py,reset_bot)"/>
-    <setting id="show_setup_secret" type="action" label="Show setup secret" action="RunScript(special://home/addons/service.kodi.ai/default.py,show_secret)"/>
   </category>
   <category label="Budget">
     <setting id="per_incident_cap_usd" type="number" label="Per-incident cap (USD)" default="0.50" min="0.01" max="100"/>

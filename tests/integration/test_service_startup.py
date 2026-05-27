@@ -8,9 +8,9 @@ Verifies the T4 boot pass:
 - exits the work-queue drain loop cleanly when abort_event is signalled.
 
 Does NOT exercise service.main() (which spawns 3 OS threads + xbmc.Monitor)
-— instead drives t4_worker_body directly with bot=None and a fake abort
-timer. This keeps the test deterministic and fast (sub-3s) while still
-covering the full Phase-11 boot sequence.
+— instead drives t4_worker_body directly with a stub BotHolder and a fake
+abort timer. This keeps the test deterministic and fast (sub-3s) while
+still covering the full Phase-11 boot sequence.
 
 Spec: §1.14, §7 (smoke/boot).
 """
@@ -36,6 +36,7 @@ def test_t4_worker_body_completes_boot_pass():
     """t4_worker_body runs full boot pass, sets startup_complete_event, and
     exits cleanly when abort_event is signalled mid-loop."""
     from service import t4_worker_body
+    from lib.bot_holder import BotHolder
     from lib.concurrency import abort_event, startup_complete_event, work_queue
 
     # The integration conftest's set_startup_complete fixture sets this event
@@ -56,8 +57,9 @@ def test_t4_worker_body_completes_boot_pass():
     stopper = threading.Thread(target=stop_after_delay, daemon=True)
     stopper.start()
 
+    bot_holder = BotHolder()  # empty holder — no bot configured during boot.
     started = time.time()
-    t4_worker_body(bot=None)
+    t4_worker_body(bot_holder)
     elapsed = time.time() - started
 
     assert startup_complete_event.is_set(), (

@@ -25,8 +25,14 @@ def test_service_py_exists():
         content = f.read()
     assert "t4_worker_body" in content
     assert "T2_LogPoll" in content
-    assert "T3_TGPoll" in content
     assert "T4_Worker" in content
+    # v0.3.0: T3 starts on-demand via BotHolder; the thread-name constant
+    # moved to lib/bot_holder.py.
+    bot_holder_path = os.path.join(here, "..", "..", "service.kodi.ai", "lib", "bot_holder.py")
+    assert os.path.exists(bot_holder_path), "lib/bot_holder.py must exist"
+    with open(bot_holder_path, encoding="utf-8") as f:
+        bh_content = f.read()
+    assert "T3_TGPoll" in bh_content
 
 
 def test_service_addon_xml_has_service_extension():
