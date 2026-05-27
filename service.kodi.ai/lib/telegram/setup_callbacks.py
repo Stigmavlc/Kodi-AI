@@ -22,24 +22,25 @@ import xbmc
 
 from .. import secrets as lib_secrets
 from .. import settings
+from .. import redactor
 from ..llm import client as llm_client
 from . import auth
 from . import setup_dm_state
 
 
 def _looks_like_or_key(text: str) -> bool:
-    """Cheap format check — most OpenRouter keys start with 'sk-or-'.
+    """Cheap format check — OpenRouter keys start with 'sk-or-'.
 
-    We don't reject keys that don't start with this prefix outright (the
-    OpenRouter team may issue legacy or alternate-prefix keys), but we
-    use it as a hint to surface a friendlier error to the user before
-    burning an HTTP round-trip.
+    Spec hardening (v0.3.1): reject early any candidate that doesn't have
+    the `sk-or-` prefix. This avoids burning an HTTP round-trip on
+    obvious garbage (typos, accidental paste of other tokens) AND keeps
+    the bot's response time snappy in the common-mistake case.
 
-    For now: accept any non-empty string of plausible length; the
-    validation call is the source of truth.
+    Keys are at least 16 chars in practice; we keep that floor to also
+    reject ultra-short inputs early.
     """
     t = text.strip()
-    return bool(t) and len(t) >= 16
+    return t.startswith("sk-or-") and len(t) >= 16
 
 
 def handle_or_key_message(bot, chat_id: int, text: str, message_id: int | None) -> None:
@@ -84,8 +85,15 @@ def handle_or_key_message(bot, chat_id: int, text: str, message_id: int | None) 
         )
         return
     except Exception as e:
+        # H2 — redact exception repr() because some HTTP error subclasses
+        # echo the full request URL (which may carry the candidate key in
+        # an Authorization-bearing context, or, more importantly, the
+        # Telegram bot URL if this exception bubbled up from a wrapped
+        # send. Always run reprs through the URL-aware redactor before
+        # logging or surfacing to the user.
+        err = redactor.redact(f"validation error: {e!r}")
         xbmc.log(
-            f"[service.kodi.ai] handle_or_key_message: validation error: {e}",
+            f"[service.kodi.ai] handle_or_key_message: {err}",
             xbmc.LOGWARNING,
         )
         bot.send_message(
@@ -99,16 +107,55 @@ def handle_or_key_message(bot, chat_id: int, text: str, message_id: int | None) 
     try:
         lib_secrets.set_secret("openrouter_key", candidate)
     except Exception as e:
+        err = redactor.redact(f"set_secret failed: {e!r}")
         xbmc.log(
-            f"[service.kodi.ai] handle_or_key_message: set_secret failed: {e}",
+            f"[service.kodi.ai] handle_or_key_message: {err}",
             xbmc.LOGERROR,
         )
         bot.send_message(
             chat_id, "Internal error saving key. Please retry.",
         )
         return
+    # B8 — delete_message is best-effort. If it fails (message too old,
+    # admin permission gone, network blip), the plaintext key persists in
+    # the user's chat history forever. We must warn the user explicitly
+    # so they can delete it manually. Do NOT abort the setup — the key
+    # was already saved to secrets.json, and aborting would just confuse
+    # the user.
     if message_id is not None:
-        bot.delete_message(chat_id, message_id)
+        deleted = False
+        delete_err = None
+        try:
+            result = bot.delete_message(chat_id, message_id)
+            # delete_message returns a dict; treat any falsy or
+            # explicit ok=False as a failure.
+            deleted = bool(isinstance(result, dict) and result.get("ok"))
+        except Exception as e:
+            deleted = False
+            delete_err = redactor.redact(repr(e))
+            xbmc.log(
+                f"[service.kodi.ai] handle_or_key_message: "
+                f"delete_message raised: {delete_err}",
+                xbmc.LOGWARNING,
+            )
+        if not deleted:
+            if delete_err is None:
+                xbmc.log(
+                    "[service.kodi.ai] handle_or_key_message: "
+                    "delete_message returned non-ok response — key "
+                    "remains in chat history",
+                    xbmc.LOGWARNING,
+                )
+            # Tell the user — they need to manually delete to scrub the
+            # plaintext key from their history.
+            try:
+                bot.send_message(
+                    chat_id,
+                    "⚠ I couldn't delete your previous message containing "
+                    "the API key. Please delete it manually from this chat.",
+                )
+            except Exception:
+                pass
 
     # Send the mode-choice inline keyboard.
     kb = {
@@ -154,8 +201,9 @@ def handle_setup_mode_callback(bot, callback_query: dict, data: str) -> None:
     try:
         settings.set_string("mode", choice)
     except Exception as e:
+        err = redactor.redact(f"set mode failed: {e!r}")
         xbmc.log(
-            f"[service.kodi.ai] handle_setup_mode_callback: set mode failed: {e}",
+            f"[service.kodi.ai] handle_setup_mode_callback: {err}",
             xbmc.LOGERROR,
         )
         return

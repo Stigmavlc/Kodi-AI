@@ -125,7 +125,8 @@ telegram poller).
 
 ## Configuration
 
-Most users only touch the wizard. The full setting set lives in
+Most users only touch Step 1 in the Telegram tab of Configure — the rest
+happens in your Telegram chat. The full setting set lives in
 `service.kodi.ai/resources/settings.xml` and is editable in Kodi via the
 add-on Configure dialog. Highlights:
 
@@ -170,8 +171,10 @@ version:
 2. **No Telegram replies** — confirm long-poll thread is alive in
    `/status`. If the network on the Shield is flaky, the bot retries with
    exponential backoff.
-3. **"Owner not paired"** — re-run the setup wizard or send `/reset_owner`
-   then re-pair from the QR.
+3. **"Owner not paired"** — use **Reset bot owner** in Settings →
+   Telegram, then send `/start <secret>` to the bot again. The pairing
+   command is shown in the Configure dialog after the bot token is
+   validated.
 4. **Hit daily budget** — `/budget` shows current spend. Raise
    `budget.daily_usd_cap` or wait until midnight UTC.
 5. **Reasoner keeps timing out** — check `health.json`; the wall-clock cap
@@ -185,9 +188,6 @@ version:
 9. **Repository updates not arriving** — Kodi caches addon repos. Force
    refresh via **Add-ons → Install from repository → Kodi-AI Repository →
    Check for updates**.
-10. **"Can't pair, QR doesn't scan"** — the QR is built from a pure-Python
-    encoder; if your camera struggles, the `/start <code>` deep link below
-    the QR works too.
 
 For full removal, see [UNINSTALL.md](UNINSTALL.md).
 

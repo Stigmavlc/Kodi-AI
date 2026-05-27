@@ -391,3 +391,98 @@ Before starting the next task:
 - [ ] Read the spec section(s) referenced by the next task (use Grep `^## § N` in the spec).
 - [ ] Read the plan task (use Grep `^### Task N.M` in the plan).
 - [ ] Dispatch implementer subagent (Opus 4.7) with **full task text pasted into the prompt** (do NOT make subagent read the plan file).
+
+---
+
+## Section 7 — v0.3.0 / v0.3.1 settings-inline setup pivot
+
+V0.3.0 was an architecture pivot away from the phone-driven WindowXMLDialog
++ local HTTP server in v0.2.x. Browser-compat issues (Brave HTTPS-Only,
+Firefox-Android cert pinning, blocked mDNS) made the v0.2.x flow fragile.
+V0.3.0 replaces it with inline-Settings setup + bot-driven DM flow.
+
+### Files deleted in v0.3.0 (no carry-over)
+
+- `lib/setup_server.py` — local HTTPS server (no longer needed).
+- `lib/setup_window.py` — Kodi WindowXMLDialog (replaced by Configure).
+- `lib/setup_ip.py` — LAN-IP probe (no server, no IP needed).
+- `resources/skins/Default/720p/Setup.xml` — dialog skin file.
+- `resources/web/setup.html` — phone-side setup page.
+- `resources/media/setup_bg.png`, `btn_focus.png`, `btn_nofocus.png`,
+  `step_pending.png`, `step_done.png` — graphical assets for the dialog.
+
+### Files deleted in v0.3.1 (post-review cleanup)
+
+- `lib/qr.py` — pure-Python Reed-Solomon QR encoder (no QR rendered any
+  longer). ~983 LoC.
+- `tests/unit/test_qr.py` — tests for the QR encoder.
+
+### Files added / changed in v0.3.0
+
+- `lib/bot_holder.py` — on-demand TelegramBot ref + T3 thread holder.
+- `lib/setup_monitor.py` — KodiAiMonitor (xbmc.Monitor subclass).
+- `lib/telegram/setup_dm_state.py` — per-chat DM-state machine.
+- `lib/telegram/setup_callbacks.py` — DM handlers (OR-key, mode-button).
+- `lib/concurrency.SettingsChanged` — new work-queue payload type.
+- `service.py` — settings-changed handler + boot-time T3 start + v0.2.x
+  bot_token migration.
+
+### Forward-looking carry-overs from v0.3.1 review
+
+These are accepted as v0.3.1 trade-offs; bump to v0.3.2+ if user reports
+come in:
+
+1. **BotHolder Option A (B2 trade-off)** — `set_token_and_start` with a
+   NEW token after a bot already exists does NOT hot-swap the running
+   T3 thread. It logs a warning, displays a toast asking the user to
+   restart Kodi, and replaces the in-memory bot reference for outgoing
+   sends. The old T3 keeps long-polling the OLD bot until shutdown.
+   Acceptable because (a) token rotation is rare (only when the user
+   regenerates the BotFather token) and (b) Option B (clean T3 stop +
+   restart with shutdown signal in TelegramBot) is a meaningful refactor
+   we deferred for v0.3.2. Tracked here, NOT in plan §4 because the plan
+   is locked. See `lib/bot_holder.py` module docstring for details.
+
+2. **status_display "no mode" branch keyed off setup_dm_state, not
+   settings.mode** (H1 fix) — `settings.xml` defaults `mode` to "auto",
+   so reading Kodi's setting always returns "auto" and the "pick mode"
+   status would be unreachable. The status function now checks if any
+   allowlisted chat is in AWAITING_MODE state in setup_dm_state, which
+   IS the right semantic ("user paired + provided key but hasn't tapped
+   Auto/Manual yet").
+
+3. **delete_message graceful failure (B8)** — if Telegram refuses to
+   delete the user's API-key message (admin perm gone, message too old,
+   network blip), the OR-key flow now sends a follow-up warning to the
+   user telling them to delete manually. Does NOT abort setup; the key
+   was already saved.
+
+4. **sk-or- prefix enforcement (B5)** — `setup_callbacks._looks_like_or_key`
+   now rejects any candidate that doesn't start with `sk-or-`. Avoids
+   burning an OpenRouter HTTP roundtrip on typos.
+
+5. **settings.xml: `enable="false"` instead of `option="readonly"` (B6)** —
+   `option="readonly"` is NOT a documented Kodi v1 attribute. Renders
+   correctly as disabled text input with `enable="false"`.
+
+6. **Token redaction discipline (B1 / H2 / H4)** — every exception
+   logged near `requests.get`/`requests.post`/`llm_client.chat`/
+   `delete_message` is wrapped in `redactor.redact(repr(e))` before
+   `xbmc.log`. The redactor's URL-aware pattern (added in v0.2.1)
+   strips Telegram bot URLs like `api.telegram.org/bot<TOKEN>/...`
+   embedded in HTTPError/JSONDecodeError repr.
+
+7. **Migration safety (B3)** — `_migrate_v0_2_x_bot_token` only promotes
+   the Kodi setting to secrets.json if no secret already exists. Avoids
+   overwriting a known-good secret with a stale Kodi-side residual.
+
+8. **Re-entrancy guard (B4)** — `setup_monitor` exposes
+   `suppress_settings_changed()` context manager; the settings-changed
+   handler runs under it to prevent self-triggered onSettingsChanged
+   cascades from setSetting writes back to status_display/bot_username/
+   pairing_command.
+
+9. **Defense-in-depth openrouter_key cleanup (R3)** — the v0.2.x
+   migration now also clears any residual `openrouter_key` value in
+   Kodi settings (it was a Kodi setting in v0.2.x even though read
+   from secrets at runtime).

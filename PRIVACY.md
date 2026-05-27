@@ -90,7 +90,9 @@ Nothing in this directory is transmitted anywhere.
 ## User controls
 
 - **`/reset_owner`** — forgets the paired chat ID. The bot will refuse
-  further commands until you re-pair via the wizard.
+  further commands until you use **Reset bot owner** in Settings →
+  Telegram and re-pair by sending the displayed `/start <secret>`
+  command to the bot.
 - **Uninstall** — see [UNINSTALL.md](UNINSTALL.md). Removing the addon
   through Kodi does **not** delete the state directory; you must remove it
   manually if you want a clean wipe.

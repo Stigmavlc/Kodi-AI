@@ -4,6 +4,84 @@ All notable changes to Kodi-AI are documented here. The project follows
 [Semantic Versioning](https://semver.org/) (with V1 being a personal-use
 release).
 
+## [0.3.1] — 2026-05-27
+
+Critical security + correctness fixes from the v0.3.0 post-implementation
+review (8 BLOCKERs + 5 HIGH-severity items + 3 cleanup items).
+
+### Security
+
+- **Token redaction in exception logs (B1 / H2 / H4).** Every site that
+  catches a `requests.exceptions.RequestException` (or any exception
+  near a Telegram / OpenRouter HTTP call) now wraps the message through
+  `redactor.redact(repr(e))` before `xbmc.log`. Prevents the Telegram
+  bot URL — `api.telegram.org/bot<TOKEN>/...` embedded in HTTPError /
+  JSONDecodeError repr — from leaking the bot_token to `kodi.log` and
+  `audit.jsonl`.
+- **Migration safety (B3).** `_migrate_v0_2_x_bot_token` now only promotes
+  a Kodi-side residual bot_token to `secrets.json` if no secret already
+  exists. A v0.2.x user with a working secret AND a stale Kodi-settings
+  residual no longer risks having the secret overwritten by the stale
+  copy.
+- **delete_message graceful failure (B8).** If Telegram refuses to delete
+  the user's OpenRouter-key message (admin permission gone, message too
+  old, network blip), the bot now sends a clear follow-up DM asking the
+  user to delete the key from chat history manually. Setup is NOT
+  aborted — the key was already saved.
+- **Defense-in-depth `openrouter_key` cleanup (R3).** Migration also
+  clears any residual `openrouter_key` from Kodi settings (it was a
+  Kodi setting in v0.2.x even though read from `secrets.json` at
+  runtime). Snapshots/backups of `settings.xml` no longer carry a
+  plaintext OpenRouter key.
+
+### Correctness
+
+- **`sk-or-` prefix enforcement (B5).** `setup_callbacks._looks_like_or_key`
+  now requires the candidate to start with `sk-or-` before burning an
+  HTTP roundtrip on OpenRouter validation. Typos and accidental pastes
+  of other tokens get a friendly hint instead.
+- **`settings.xml` readonly attribute fix (B6).** `status_display`,
+  `bot_username`, and `pairing_command` now use the documented
+  `enable="false"` attribute. The undocumented `option="readonly"`
+  attribute used in v0.3.0 was not guaranteed to render correctly in
+  Kodi v21 (Omega).
+- **Bot token hot-swap notice (B2).** `BotHolder.set_token_and_start`
+  called with a NEW token after a bot already exists now logs a clear
+  warning AND displays a toast asking the user to restart Kodi. The
+  in-memory bot reference is replaced (so handlers using `.get()` see
+  the new bot for outgoing sends); the running T3 long-poll thread is
+  NOT touched and keeps using the old bot until shutdown. Documented
+  trade-off — clean hot-swap is deferred to v0.3.2+.
+- **Re-entrancy guard (B4).** The settings-changed handler runs under
+  `suppress_settings_changed()` so the cascade of setSetting writes
+  to derived display fields (`status_display`, `bot_username`,
+  `pairing_command`) doesn't trigger self-amplifying onSettingsChanged
+  callbacks.
+- **`status_display` "no mode" reachability (H1).** The "pick agent
+  mode in Telegram" status is now driven by `setup_dm_state` (any
+  allowlisted chat in `AWAITING_MODE`), not by reading `settings.mode`
+  (which always returns the v1 default "auto" and made the branch
+  unreachable).
+- **Debounce test coverage (H3).** Added a test that verifies the
+  `last_known_bot_token` debounce actually short-circuits a second
+  handler invocation with the same token.
+
+### Removed
+
+- `lib/qr.py` (~983 LoC pure-Python Reed-Solomon QR encoder) — was
+  unused after the v0.3.0 architecture pivot.
+- `tests/unit/test_qr.py` — corresponding tests.
+
+### Docs
+
+- `README.md` — stripped stale references to wizard / QR re-pair flows;
+  troubleshooting now points to **Reset bot owner** in Settings →
+  Telegram for re-pairing.
+- `PRIVACY.md` — `/reset_owner` description updated to reference the
+  inline Reset action, not the deleted wizard.
+- `HANDOVER.md` — added Section 7 documenting the v0.3.0 → v0.3.1
+  pivot and all carry-over decisions.
+
 ## [0.3.0] — 2026-05-27
 
 Complete setup-UX rewrite. The phone-driven WindowXMLDialog + local HTTP

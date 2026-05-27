@@ -327,3 +327,160 @@ def test_done_state_routes_to_normal_userMsg_flow(
         if hasattr(item, "chat_id") and item.chat_id == 42:
             found = True
     assert found
+
+
+def test_handle_or_key_message_format_reject_requires_sk_or_prefix(
+    setup_paths, fake_xbmcaddon, captured_sends, monkeypatch,
+):
+    """B5 — A 16+ char string NOT starting with sk-or- must be rejected
+    by _looks_like_or_key without burning an OpenRouter HTTP call."""
+    from lib.telegram import bot as bot_mod, setup_dm_state, auth
+    from lib.llm import client as llm_client
+    auth._save_allowlist([42])
+    setup_dm_state.set_state(42, setup_dm_state.AWAITING_OR_KEY)
+
+    # If llm_client.chat is reached, test fails.
+    chat_calls: list[dict] = []
+    monkeypatch.setattr(
+        llm_client, "chat",
+        lambda **kw: chat_calls.append(kw) or mock.MagicMock(),
+    )
+
+    b = bot_mod.TelegramBot(bot_token="123:abc")
+    # 24 chars, plausible-looking gibberish, but no sk-or- prefix.
+    b._handle_update({
+        "message": {
+            "chat": {"id": 42},
+            "text": "ABCD1234EFGH5678IJKL90mn",
+            "message_id": 70,
+        },
+    })
+    # llm_client.chat MUST NOT be called.
+    assert chat_calls == [], (
+        "B5 violation: 16+ char non-sk-or- string reached llm_client.chat"
+    )
+    # State unchanged.
+    assert setup_dm_state.get_state(42) == setup_dm_state.AWAITING_OR_KEY
+    # Friendly hint surfaced (mentioning sk-or-).
+    send_msgs = [c for c in captured_sends if c[0].endswith("/sendMessage")]
+    assert any("sk-or-" in c[1]["text"] for c in send_msgs)
+
+
+def test_handle_or_key_message_delete_failure_warns_user(
+    setup_paths, fake_xbmcaddon, monkeypatch,
+):
+    """B8 — If delete_message fails (returns non-ok), the bot must send
+    a follow-up DM warning the user to delete the key message manually.
+    Setup MUST NOT be aborted — the key was already saved.
+    """
+    from lib.telegram import bot as bot_mod, setup_dm_state, auth
+    from lib import secrets
+    from lib.llm import client as llm_client
+    auth._save_allowlist([42])
+    setup_dm_state.set_state(42, setup_dm_state.AWAITING_OR_KEY)
+
+    # llm_client.chat → success.
+    monkeypatch.setattr(
+        llm_client, "chat",
+        lambda **kw: mock.MagicMock(text="pong", tokens_in=0, tokens_out=1),
+    )
+
+    # captured_sends + override delete to return ok=False AND track all
+    # calls (so we can verify the warning was sent).
+    calls: list[tuple[str, dict]] = []
+
+    def fake_post(url, json=None, timeout=None):
+        calls.append((url, json or {}))
+        # Make deleteMessage return ok=False; everything else returns ok.
+        if url.endswith("/deleteMessage"):
+            class R:
+                def json(self):
+                    return {"ok": False, "error_code": 400,
+                            "description": "message too old"}
+            return R()
+        class R2:
+            def json(self):
+                return {"ok": True, "result": {}}
+        return R2()
+    monkeypatch.setattr(bot_mod.requests, "post", fake_post)
+
+    b = bot_mod.TelegramBot(bot_token="123:abc")
+    b._handle_update({
+        "message": {
+            "chat": {"id": 42},
+            "text": "sk-or-validkey1234567890abcdef",
+            "message_id": 99,
+        },
+    })
+
+    # Key saved (setup NOT aborted).
+    assert secrets.get_secret("openrouter_key") == "sk-or-validkey1234567890abcdef"
+
+    # State advanced to AWAITING_MODE.
+    assert setup_dm_state.get_state(42) == setup_dm_state.AWAITING_MODE
+
+    # A delete was attempted.
+    delete_calls = [c for c in calls if c[0].endswith("/deleteMessage")]
+    assert delete_calls, "expected a deleteMessage attempt"
+
+    # A warning DM must have been sent (user-visible text mentioning
+    # manual deletion).
+    send_msgs = [c for c in calls if c[0].endswith("/sendMessage")]
+    warning_msgs = [
+        c for c in send_msgs
+        if "manually" in c[1].get("text", "").lower()
+        and ("api key" in c[1].get("text", "").lower()
+             or "previous message" in c[1].get("text", "").lower())
+    ]
+    assert warning_msgs, (
+        f"B8 violation: expected manual-delete warning DM, got: "
+        f"{[c[1].get('text','')[:80] for c in send_msgs]}"
+    )
+
+
+def test_handle_or_key_message_delete_raises_warns_user(
+    setup_paths, fake_xbmcaddon, monkeypatch,
+):
+    """B8 — Same warning must be sent if delete_message RAISES (network
+    error, transient HTTP failure, etc.) rather than returning non-ok.
+    """
+    from lib.telegram import bot as bot_mod, setup_dm_state, auth
+    from lib import secrets
+    from lib.llm import client as llm_client
+    auth._save_allowlist([42])
+    setup_dm_state.set_state(42, setup_dm_state.AWAITING_OR_KEY)
+
+    monkeypatch.setattr(
+        llm_client, "chat",
+        lambda **kw: mock.MagicMock(text="pong", tokens_in=0, tokens_out=1),
+    )
+
+    calls: list[tuple[str, dict]] = []
+
+    def fake_post(url, json=None, timeout=None):
+        calls.append((url, json or {}))
+        if url.endswith("/deleteMessage"):
+            raise bot_mod.requests.exceptions.ConnectionError("timeout")
+        class R2:
+            def json(self):
+                return {"ok": True, "result": {}}
+        return R2()
+    monkeypatch.setattr(bot_mod.requests, "post", fake_post)
+
+    b = bot_mod.TelegramBot(bot_token="123:abc")
+    b._handle_update({
+        "message": {
+            "chat": {"id": 42},
+            "text": "sk-or-validkey1234567890abcdef",
+            "message_id": 99,
+        },
+    })
+
+    # Key saved.
+    assert secrets.get_secret("openrouter_key") == "sk-or-validkey1234567890abcdef"
+    # Warning DM sent.
+    send_msgs = [c for c in calls if c[0].endswith("/sendMessage")]
+    assert any(
+        "manually" in c[1].get("text", "").lower()
+        for c in send_msgs
+    ), "B8: expected manual-delete warning on delete_message raise"

@@ -1,15 +1,15 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <settings>
   <category label="Telegram">
-    <setting id="status_display" type="text" label="Status" option="readonly" default="⚠ Not configured"/>
+    <setting id="status_display" type="text" label="Status" enable="false" default="⚠ Not configured"/>
     <setting type="lsep" label="Step 1: Create your bot"/>
     <setting id="step1_hint1" type="lsep" label="Open Telegram → message @BotFather"/>
     <setting id="step1_hint2" type="lsep" label="Send /newbot, follow prompts, copy token"/>
     <setting id="bot_token" type="text" label="Bot token" option="hidden" default=""/>
-    <setting id="bot_username" type="text" label="Bot username" option="readonly" default="(auto-detected after token)"/>
+    <setting id="bot_username" type="text" label="Bot username" enable="false" default="(auto-detected after token)"/>
     <setting type="lsep" label="Step 2: Pair your phone"/>
     <setting id="step2_hint1" type="lsep" label="In Telegram, send this to your bot:"/>
-    <setting id="pairing_command" type="text" label="Pairing command" option="readonly" default="(set bot token first)"/>
+    <setting id="pairing_command" type="text" label="Pairing command" enable="false" default="(set bot token first)"/>
     <setting type="lsep" label="Step 3: Finish in Telegram"/>
     <setting id="step3_hint1" type="lsep" label="The bot will ask for your OpenRouter key"/>
     <setting id="step3_hint2" type="lsep" label="Get one at openrouter.ai/keys (~$5)"/>

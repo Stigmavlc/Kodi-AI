@@ -32,7 +32,21 @@ def setup_paths(tmp_path, monkeypatch):
     from lib import state_paths, secrets
     state_paths.ensure_dirs()
     secrets.invalidate_cache()
+    # H1 — defensive: invalidate setup_dm_state's module-level cache so
+    # cross-test leakage from test_telegram_dm_setup.py doesn't affect
+    # our status_display tests (which read setup_dm_state).
+    try:
+        from lib.telegram import setup_dm_state
+        setup_dm_state.invalidate_cache()
+    except Exception:
+        pass
     yield tmp_path
+    # Clean up on exit too — keep _cache empty between tests.
+    try:
+        from lib.telegram import setup_dm_state
+        setup_dm_state.invalidate_cache()
+    except Exception:
+        pass
 
 
 @pytest.fixture
@@ -315,3 +329,331 @@ def test_status_display_paired_no_key(
     import service
     status = service._compute_status_display()
     assert "waiting" in status.lower() or "openrouter" in status.lower()
+
+
+def test_status_display_paired_no_mode_via_dm_state(
+    setup_paths, fake_xbmcaddon, monkeypatch,
+):
+    """H1 — The 'pick agent mode in Telegram' status MUST be reachable
+    when an allowlisted chat is in AWAITING_MODE. The previous logic
+    keyed off settings.mode which always defaults to 'auto' in
+    settings.xml, making the branch dead code.
+    """
+    from lib import secrets, state_paths
+    from lib.telegram import setup_dm_state
+    secrets.set_secret("bot_token", "12345:abc")
+    secrets.set_secret("openrouter_key", "sk-or-validkey1234567890")
+    # Pair a chat.
+    import json
+    path = state_paths.profile_path("chat_allowlist.json")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump([5555], f)
+    # Set the chat to AWAITING_MODE (key validated but mode not picked).
+    setup_dm_state.set_state(5555, setup_dm_state.AWAITING_MODE)
+    # Even though Kodi's settings.mode defaults to 'auto', we expect
+    # the dm_state signal to win.
+    fake_xbmcaddon["mode"] = "auto"
+    import service
+    status = service._compute_status_display()
+    assert "pick" in status.lower() or "agent mode" in status.lower(), (
+        f"H1 violation: expected 'pick agent mode' status, got: {status!r}"
+    )
+
+
+def test_settings_handler_redacts_token_on_ssl_error(
+    setup_paths, fake_xbmcaddon, stub_xbmcgui, stub_bot_holder, monkeypatch,
+):
+    """B1 — When requests.get raises a RequestException whose repr()
+    embeds the Telegram bot URL (e.g. SSLError, HTTPError), the
+    logged message AND any audit entry must have the token REDACTED.
+
+    The redactor's URL-aware pattern (introduced in v0.2.1) catches
+    `bot<TOKEN>:<rest>` glued to a path segment. Without redactor.redact()
+    on the exception path, the token would leak to kodi.log + audit.
+    """
+    leaky_token = "1234567890:ABCdefGHIjklMNOpqrSTUvwxYZabcdefgHIjkl"
+    fake_xbmcaddon["bot_token"] = leaky_token
+    holder, started = stub_bot_holder
+    state = {"last_known_bot_token": ""}
+
+    import requests
+    # Construct a real RequestException with a repr() that embeds the
+    # full URL — this is what happens with HTTPError / SSLError.
+    leaky_url = f"https://api.telegram.org/bot{leaky_token}/getMe"
+
+    class FakeSSLError(requests.exceptions.RequestException):
+        def __init__(self, msg):
+            super().__init__(msg)
+            self._msg = msg
+        def __repr__(self):
+            return f"FakeSSLError({self._msg!r})"
+        def __str__(self):
+            return self._msg
+
+    def fake_get(url, timeout=None):
+        raise FakeSSLError(f"HTTPSConnectionPool(host='api.telegram.org'): bad cert for {leaky_url}")
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    # Capture xbmc.log calls so we can assert no token leaks.
+    import xbmc
+    log_calls: list[tuple[str, int]] = []
+    monkeypatch.setattr(xbmc, "log", lambda msg, lvl=0: log_calls.append((msg, lvl)))
+
+    import service
+    service._handle_settings_changed(holder, state)
+
+    # Verify SOME log line was emitted about getMe.
+    relevant = [msg for msg, _ in log_calls if "getMe" in msg or "network" in msg]
+    assert relevant, "expected at least one log entry about getMe failure"
+    # CRITICAL — none of the log lines should contain the raw token.
+    for msg, _ in log_calls:
+        assert leaky_token not in msg, (
+            f"TOKEN LEAK in log line: {msg!r}"
+        )
+
+
+def test_handler_skips_revalidation_for_unchanged_token(
+    setup_paths, fake_xbmcaddon, stub_xbmcgui, stub_bot_holder, monkeypatch,
+):
+    """H3 — The debounce mechanism (last_known_bot_token) MUST short-
+    circuit when the handler is called twice with the same token.
+    """
+    import requests
+    get_call_urls: list[str] = []
+
+    def fake_get(url, timeout=None):
+        get_call_urls.append(url)
+        resp = mock.MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {
+            "ok": True, "result": {"id": 1, "username": "kodibot"},
+        }
+        return resp
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    fake_xbmcaddon["bot_token"] = "12345:goodtoken"
+    holder, started = stub_bot_holder
+    state = {"last_known_bot_token": ""}
+
+    import service
+    service._handle_settings_changed(holder, state)
+    # Handler cleared the Kodi-setting copy. To simulate the user
+    # re-opening Configure (no token change) we must put it back so
+    # the handler sees the SAME token to compare against state.
+    fake_xbmcaddon["bot_token"] = "12345:goodtoken"
+
+    n_before = len(get_call_urls)
+    service._handle_settings_changed(holder, state)
+    # Second call should NOT have triggered another getMe — the
+    # state.last_known_bot_token equals the current Kodi setting.
+    assert len(get_call_urls) == n_before, (
+        "expected debounce: second call must NOT re-validate same token"
+    )
+
+
+def test_migration_does_not_overwrite_existing_secret(
+    setup_paths, fake_xbmcaddon, monkeypatch,
+):
+    """B3 — If a v0.2.x user has BOTH a working bot_token in secrets.json
+    AND a stale residual in Kodi settings, migration MUST preserve the
+    secret (source of truth) and merely clear the plaintext residual.
+    Never overwrite a non-empty secret with a Kodi-side value.
+    """
+    from lib import secrets
+    # Pre-seed a known-good secret.
+    secrets.set_secret("bot_token", "999:CURRENT_GOOD_SECRET")
+    # And place a DIFFERENT (stale) residual in Kodi settings.
+    fake_xbmcaddon["bot_token"] = "111:STALE_KODI_RESIDUAL"
+
+    import service
+    service._migrate_v0_2_x_bot_token()
+
+    # Secret must be UNCHANGED.
+    assert secrets.get_secret("bot_token") == "999:CURRENT_GOOD_SECRET", (
+        "B3 violation: migration overwrote the existing secret"
+    )
+    # Kodi setting must be CLEARED (defense in depth).
+    assert fake_xbmcaddon.get("bot_token", "") == ""
+
+
+def test_migration_clears_openrouter_key_kodi_residual(
+    setup_paths, fake_xbmcaddon, monkeypatch,
+):
+    """R3 — Defense-in-depth: openrouter_key residual in Kodi settings
+    must be cleared during migration regardless of bot_token state.
+    """
+    fake_xbmcaddon["openrouter_key"] = "sk-or-stale-key-12345"
+    # No bot_token at all → migration's bot_token branch is a no-op.
+    import service
+    service._migrate_v0_2_x_bot_token()
+    assert fake_xbmcaddon.get("openrouter_key", "") == ""
+
+
+def test_handler_writes_dont_trigger_recursive_settings_change(
+    setup_paths, fake_xbmcaddon, stub_xbmcgui, stub_bot_holder, stub_requests_ok,
+):
+    """B4 — The handler writes derived display fields (status_display,
+    bot_username, pairing_command) via setSetting. Each setSetting on a
+    real Kodi instance triggers onSettingsChanged on the GUI thread,
+    which calls KodiAiMonitor.onSettingsChanged → put_nowait on the
+    work queue. Without the suppress guard, this creates a cascade.
+
+    Test: while the handler is running, the suppress flag must be SET
+    so any concurrent onSettingsChanged callback short-circuits.
+    """
+    fake_xbmcaddon["bot_token"] = "12345:goodtoken"
+    holder, started = stub_bot_holder
+    state = {"last_known_bot_token": ""}
+
+    # Drain the work queue first.
+    from lib import concurrency
+    while not concurrency.work_queue.empty():
+        concurrency.work_queue.get_nowait()
+
+    # Spy on the suppress flag — we wrap settings.set_string to assert
+    # the suppress event is SET at the time setSetting is called.
+    from lib import settings as settings_mod
+    from lib import setup_monitor
+    original_set_string = settings_mod.set_string
+    suppress_seen: list[bool] = []
+
+    def spy_set_string(key, value):
+        suppress_seen.append(setup_monitor._suppress_event.is_set())
+        return original_set_string(key, value)
+    import service
+    monkeypatch_target = service
+    # We use a direct attribute patch on the imports lookup — service.py
+    # called `from lib import settings` then `settings.set_string`.
+    original = service.settings.set_string
+    service.settings.set_string = spy_set_string
+    try:
+        service._handle_settings_changed(holder, state)
+    finally:
+        service.settings.set_string = original
+
+    # At least one settings.set_string was called inside the handler
+    # (status_display update is unconditional).
+    assert suppress_seen, "expected handler to write derived fields"
+    # ALL such writes must have seen the suppress event SET.
+    assert all(suppress_seen), (
+        "B4 violation: settings writes did not run under suppress_event"
+    )
+    # After the handler exits, the event must be CLEARED.
+    assert not setup_monitor._suppress_event.is_set(), (
+        "B4 violation: suppress_event leaked past handler return"
+    )
+    # And the KodiAiMonitor.onSettingsChanged would also short-circuit
+    # while suppress is set — verify the gate directly.
+    setup_monitor._suppress_event.set()
+    try:
+        # Drain queue then trigger onSettingsChanged.
+        while not concurrency.work_queue.empty():
+            concurrency.work_queue.get_nowait()
+        m = setup_monitor.KodiAiMonitor()
+        m.onSettingsChanged()
+        assert concurrency.work_queue.empty(), (
+            "B4 violation: suppress_event did not block enqueue"
+        )
+    finally:
+        setup_monitor._suppress_event.clear()
+
+
+def test_set_token_and_start_twice_shows_restart_notice(
+    setup_paths, fake_xbmcaddon, stub_xbmcgui, monkeypatch,
+):
+    """B2 — When set_token_and_start is called a second time with a
+    DIFFERENT token, the holder must surface a "restart Kodi" notice
+    AND replace the in-memory bot reference (so handlers using get()
+    see the new bot for outgoing sends).
+    """
+    from lib import bot_holder as bot_holder_mod
+    # Patch threading.Thread so we don't actually spin up T3.
+    started_threads: list = []
+
+    class FakeThread:
+        def __init__(self, target=None, name=None, daemon=False):
+            self._target = target
+            self.name = name
+            self.daemon = daemon
+            self._alive = False
+        def start(self):
+            self._alive = True
+            started_threads.append(self)
+        def is_alive(self):
+            return self._alive
+        def join(self, timeout=None):
+            pass
+    monkeypatch.setattr(bot_holder_mod.threading, "Thread", FakeThread)
+
+    # Patch xbmcgui notification to record toasts.
+    notifications: list[str] = []
+    fake_xbmcgui_module = mock.MagicMock()
+
+    class FakeDialog:
+        def notification(self, title, message, **kw):
+            notifications.append(message)
+    fake_xbmcgui_module.Dialog.return_value = FakeDialog()
+    monkeypatch.setitem(sys.modules, "xbmcgui", fake_xbmcgui_module)
+
+    holder = bot_holder_mod.BotHolder()
+    holder.set_token_and_start("token-A")
+    assert holder.get() is not None
+    # T3 was started exactly once.
+    assert len(started_threads) == 1
+
+    # Second call with DIFFERENT token: should NOT start another thread,
+    # should replace the bot reference, AND should toast.
+    holder.set_token_and_start("token-B")
+    # No new thread (the old T3 keeps running per B2 Option A).
+    assert len(started_threads) == 1
+    # Bot reference updated for outgoing sends.
+    new_bot = holder.get()
+    assert new_bot is not None
+    assert new_bot.token == "token-B"
+    # Notification surfaced.
+    assert any("restart" in n.lower() for n in notifications), (
+        f"expected 'restart Kodi' notification, got {notifications!r}"
+    )
+
+
+def test_set_token_and_start_same_token_idempotent(
+    setup_paths, fake_xbmcaddon, monkeypatch,
+):
+    """B2 — Calling set_token_and_start twice with the SAME token must
+    be idempotent (no extra threads, no warning toast)."""
+    from lib import bot_holder as bot_holder_mod
+
+    started_threads: list = []
+
+    class FakeThread:
+        def __init__(self, target=None, name=None, daemon=False):
+            self._target = target
+            self.name = name
+            self.daemon = daemon
+            self._alive = False
+        def start(self):
+            self._alive = True
+            started_threads.append(self)
+        def is_alive(self):
+            return self._alive
+        def join(self, timeout=None):
+            pass
+    monkeypatch.setattr(bot_holder_mod.threading, "Thread", FakeThread)
+
+    notifications: list[str] = []
+    fake_xbmcgui_module = mock.MagicMock()
+
+    class FakeDialog:
+        def notification(self, title, message, **kw):
+            notifications.append(message)
+    fake_xbmcgui_module.Dialog.return_value = FakeDialog()
+    monkeypatch.setitem(sys.modules, "xbmcgui", fake_xbmcgui_module)
+
+    holder = bot_holder_mod.BotHolder()
+    holder.set_token_and_start("token-A")
+    holder.set_token_and_start("token-A")
+    # Only one T3 started.
+    assert len(started_threads) == 1
+    # No "restart" notification.
+    assert not any("restart" in n.lower() for n in notifications)

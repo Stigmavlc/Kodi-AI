@@ -48,7 +48,7 @@ from lib import redactor, log_watcher, triage
 from lib import reasoner as reasoner_mod
 from lib import reasoner_state, pause_sequence
 from lib.bot_holder import BotHolder
-from lib.setup_monitor import KodiAiMonitor
+from lib.setup_monitor import KodiAiMonitor, suppress_settings_changed
 from lib.concurrency import (
     abort_event,
     startup_complete_event,
@@ -128,7 +128,10 @@ def _handle_incident(incident: LogIncident, bot_holder: BotHolder) -> None:
             cluster_text=cluster_text,
         )
     except Exception as e:
-        xbmc.log(f"[service.kodi.ai] triage failed: {e}", xbmc.LOGWARNING)
+        # Defensive — LLM exceptions can carry response bodies that
+        # echo the request URL or rejected key. Always redact.
+        err = redactor.redact(f"triage failed: {e!r}")
+        xbmc.log(f"[service.kodi.ai] {err}", xbmc.LOGWARNING)
         verdict = "IGNORE"
     if verdict != "CRITICAL":
         return
@@ -298,8 +301,17 @@ def _compute_status_display() -> str:
       bot_token missing               → "⚠ Not configured"
       bot_token present, no allowlist → "⚠ Bot verified — send /start to @<u>"
       paired, no openrouter_key       → "⚠ Paired — waiting for OpenRouter key"
-      paired + key, no mode           → "⚠ Paired — pick agent mode in Telegram"
+      paired + key, mid-DM-flow       → "⚠ Paired — pick agent mode in Telegram"
       everything set                  → "✓ Active — monitoring Kodi logs"
+
+    H1 — Mode-pending branch uses `setup_dm_state` (not Kodi's enum value)
+    as the signal. `settings.xml` defaults `mode` to "auto", so reading
+    Kodi's setting after install would always return "auto" and the
+    branch would be unreachable. The user hasn't actually CONFIRMED a
+    mode until they tap the Auto/Manual inline button in Telegram — at
+    which point the bot transitions the chat's DM state to DONE.
+    Therefore: any allowlisted chat still in AWAITING_MODE means the
+    user has paired + provided key but hasn't tapped a mode button.
     """
     has_bot = bool(lib_secrets.get_secret("bot_token"))
     if not has_bot:
@@ -313,9 +325,23 @@ def _compute_status_display() -> str:
     has_key = bool(lib_secrets.get_secret("openrouter_key"))
     if not has_key:
         return "⚠ Paired — waiting for OpenRouter key"
-    mode = settings.get_string("mode", "") or ""
-    if not mode:
-        return "⚠ Paired — pick agent mode in Telegram"
+    # H1 — check setup_dm_state for any allowlisted chat that's still
+    # mid-flow. AWAITING_MODE means key validated but mode-button not
+    # tapped. If any chat is mid-flow, surface the "pick agent mode"
+    # status. Defensive try/except: setup_dm_state read should be cheap
+    # but we never want status computation to crash T4.
+    try:
+        from lib.telegram import setup_dm_state as _dm_state
+        for chat_id in allowlist:
+            try:
+                state = _dm_state.get_state(int(chat_id))
+            except (TypeError, ValueError):
+                continue
+            if state == _dm_state.AWAITING_MODE:
+                return "⚠ Paired — pick agent mode in Telegram"
+    except Exception:
+        # Bare except — status computation must never raise.
+        pass
     return "✓ Active — monitoring Kodi logs"
 
 
@@ -348,7 +374,22 @@ def _handle_settings_changed(bot_holder: BotHolder, state: dict) -> None:
       4. If bot_token changed: call getMe → if valid, copy to secrets, clear
          Kodi settings copy, refresh derived display fields, start T3.
          If invalid: set status to error. Keep user input (so they can fix it).
+
+    B4 — Whole handler runs under suppress_settings_changed() because the
+    setSetting calls inside this body (status_display, bot_username,
+    pairing_command, clear-bot_token) would otherwise each trigger a
+    fresh onSettingsChanged callback and re-enqueue SettingsChanged
+    work items in a self-amplifying cascade.
     """
+    with suppress_settings_changed():
+        _handle_settings_changed_inner(bot_holder, state)
+
+
+def _handle_settings_changed_inner(bot_holder: BotHolder, state: dict) -> None:
+    """B4 helper: actual handler body. Always invoked under the
+    suppress_settings_changed() context — see _handle_settings_changed.
+    Split out so the suppress contract has a single, easy-to-audit
+    entry point."""
     # 1. Cache invalidation — sees fresh values for everything below.
     try:
         settings.invalidate_cache()
@@ -364,8 +405,13 @@ def _handle_settings_changed(bot_holder: BotHolder, state: dict) -> None:
             xbmcaddon.Addon("service.kodi.ai").getSetting("bot_token") or ""
         ).strip()
     except Exception as e:
+        # B1 / H4 — always redact exception repr/text before logging in
+        # any path that handles bot_token. Even if this particular
+        # exception doesn't carry the token, sibling sites do, and a
+        # consistent rule is more auditable than per-site judgment.
+        err = redactor.redact(f"read bot_token failed: {e!r}")
         xbmc.log(
-            f"[service.kodi.ai] settings_changed: read bot_token failed: {e}",
+            f"[service.kodi.ai] settings_changed: {err}",
             xbmc.LOGWARNING,
         )
         kodi_bot_token = ""
@@ -395,8 +441,15 @@ def _handle_settings_changed(bot_holder: BotHolder, state: dict) -> None:
         except Exception:
             body = {}
     except requests.exceptions.RequestException as e:
+        # B1 — RequestException subclasses (HTTPError, JSONDecodeError,
+        # InvalidURL, etc.) EMBED THE FULL REQUEST URL in their repr/
+        # str(), which here is api.telegram.org/bot<TOKEN>/getMe. Without
+        # redaction, the token leaks into kodi.log AND audit_log. The
+        # redactor's URL-aware pattern (introduced in v0.2.1) handles
+        # this exact case, but only if we actually CALL it.
+        err = redactor.redact(f"getMe network error: {e!r}")
         xbmc.log(
-            f"[service.kodi.ai] settings_changed: getMe network error: {e}",
+            f"[service.kodi.ai] settings_changed: {err}",
             xbmc.LOGWARNING,
         )
         # Network error — keep user input, advise retry.
@@ -416,17 +469,22 @@ def _handle_settings_changed(bot_holder: BotHolder, state: dict) -> None:
             pass
         return
     except Exception as e:
+        err = redactor.redact(f"getMe failed: {e!r}")
         xbmc.log(
-            f"[service.kodi.ai] settings_changed: getMe failed: {e}",
+            f"[service.kodi.ai] settings_changed: {err}",
             xbmc.LOGERROR,
         )
         return
 
     # HTTP 4xx → invalid token (most commonly 401).
     if not body.get("ok") or status_code >= 400:
+        # H4 — Telegram error response bodies CAN echo the request URL
+        # in their `description` field on rare error paths. Redact the
+        # body dump before logging.
+        body_safe = redactor.redact(repr(body))
         xbmc.log(
             f"[service.kodi.ai] settings_changed: bot token invalid "
-            f"(status={status_code}, body={body})",
+            f"(status={status_code}, body={body_safe})",
             xbmc.LOGWARNING,
         )
         try:
@@ -454,8 +512,9 @@ def _handle_settings_changed(bot_holder: BotHolder, state: dict) -> None:
     try:
         lib_secrets.set_secret("bot_token", kodi_bot_token)
     except Exception as e:
+        err = redactor.redact(f"set_secret bot_token failed: {e!r}")
         xbmc.log(
-            f"[service.kodi.ai] settings_changed: set_secret bot_token failed: {e}",
+            f"[service.kodi.ai] settings_changed: {err}",
             xbmc.LOGERROR,
         )
     try:
@@ -465,8 +524,9 @@ def _handle_settings_changed(bot_holder: BotHolder, state: dict) -> None:
         # Kodi value (we deliberately cleared it).
         settings.invalidate_cache()
     except Exception as e:
+        err = redactor.redact(f"clear Kodi bot_token failed: {e!r}")
         xbmc.log(
-            f"[service.kodi.ai] settings_changed: clear Kodi bot_token failed: {e}",
+            f"[service.kodi.ai] settings_changed: {err}",
             xbmc.LOGWARNING,
         )
 
@@ -481,8 +541,9 @@ def _handle_settings_changed(bot_holder: BotHolder, state: dict) -> None:
     try:
         secret = tg_auth.generate_setup_secret()
     except Exception as e:
+        err = redactor.redact(f"generate_setup_secret failed: {e!r}")
         xbmc.log(
-            f"[service.kodi.ai] settings_changed: generate_setup_secret failed: {e}",
+            f"[service.kodi.ai] settings_changed: {err}",
             xbmc.LOGERROR,
         )
         secret = ""
@@ -514,13 +575,16 @@ def _handle_settings_changed(bot_holder: BotHolder, state: dict) -> None:
     except Exception:
         pass
 
-    # Start T3 long-poll on demand (idempotent — set_token_and_start is a
-    # no-op if already running with the same bot).
+    # Start T3 long-poll on demand. Per v0.3.0 design + B2 limitation:
+    # on subsequent calls with a NEW token the existing T3 keeps using
+    # the OLD bot until restart. set_token_and_start surfaces that
+    # constraint as a toast.
     try:
         bot_holder.set_token_and_start(kodi_bot_token)
     except Exception as e:
+        err = redactor.redact(f"start T3 failed: {e!r}")
         xbmc.log(
-            f"[service.kodi.ai] settings_changed: start T3 failed: {e}",
+            f"[service.kodi.ai] settings_changed: {err}",
             xbmc.LOGERROR,
         )
 
@@ -546,32 +610,67 @@ def _migrate_v0_2_x_bot_token() -> None:
     secrets.json and clear the plaintext copy.
 
     Safe to call every boot — short-circuits cleanly when nothing to do.
+
+    B3 — Migration MUST NOT overwrite a valid existing secret. v0.2.x
+    users who upgraded smoothly may have BOTH a working bot_token in
+    secrets.json AND a stale residual copy in Kodi settings.xml. The
+    Kodi-side copy is potentially out of date; the secret is the
+    source of truth. Only promote when the secret is EMPTY. Always
+    clear the plaintext residual either way (defense in depth — a
+    plaintext token in settings.xml is a backup/snapshot leak vector).
+
+    R3 — Also clear openrouter_key from Kodi settings as defense in
+    depth. v0.2.x had openrouter_key as a Kodi setting (read-from-
+    secrets at runtime), so a residual plaintext value may persist.
     """
     try:
         import xbmcaddon
-        residual = (
-            xbmcaddon.Addon("service.kodi.ai").getSetting("bot_token") or ""
-        ).strip()
+        addon = xbmcaddon.Addon("service.kodi.ai")
+        residual = (addon.getSetting("bot_token") or "").strip()
+        # R3 — opportunistically clear openrouter_key residual too. We
+        # do this whether or not bot_token residual exists, because
+        # both settings were promoted to secrets.json in v0.3.0.
+        try:
+            or_residual = (addon.getSetting("openrouter_key") or "").strip()
+            if or_residual:
+                addon.setSetting("openrouter_key", "")
+                xbmc.log(
+                    "[service.kodi.ai] v0.3.0 migration: cleared "
+                    "openrouter_key plaintext from Kodi settings",
+                    xbmc.LOGINFO,
+                )
+        except Exception:
+            pass
         if not residual:
             return
-        # If we already have a secret bot_token AND it matches the residual,
-        # the only thing left to do is clear the Kodi copy. If they differ,
-        # prefer the user's recent edit (residual) — that's a settings edit
-        # the user actively made.
+        # B3 — only promote the Kodi setting if no secret yet exists.
+        # If a secret IS already present (different OR same value),
+        # we trust the secret as the source of truth and just clear
+        # the plaintext residual. NEVER overwrite a non-empty secret.
         secret_existing = lib_secrets.get_secret("bot_token") or ""
-        if residual and residual != secret_existing:
+        if not secret_existing:
             lib_secrets.set_secret("bot_token", residual)
             xbmc.log(
                 "[service.kodi.ai] v0.3.0 migration: moved bot_token to "
                 "secrets.json",
                 xbmc.LOGINFO,
             )
+        else:
+            xbmc.log(
+                "[service.kodi.ai] v0.3.0 migration: secret bot_token "
+                "already present — preserving secret, clearing Kodi "
+                "plaintext residual",
+                xbmc.LOGINFO,
+            )
         # Always clear the plaintext copy.
-        xbmcaddon.Addon("service.kodi.ai").setSetting("bot_token", "")
+        addon.setSetting("bot_token", "")
         settings.invalidate_cache()
     except Exception as e:
+        # Redact in case the platform mirror echoed any token-bearing
+        # path into the exception text.
+        err = redactor.redact(f"v0.3.0 migration failed: {e!r}")
         xbmc.log(
-            f"[service.kodi.ai] v0.3.0 migration failed: {e}", xbmc.LOGWARNING,
+            f"[service.kodi.ai] {err}", xbmc.LOGWARNING,
         )
 
 
@@ -763,7 +862,7 @@ def main() -> None:
     except Exception:
         pass
     try:
-        audit_log.write("startup", details={"version": "0.3.0"})
+        audit_log.write("startup", details={"version": "0.3.1"})
     except Exception:
         pass
 

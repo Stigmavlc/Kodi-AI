@@ -14,6 +14,25 @@ This module is intentionally tiny: the heavy work happens on T4 via the
 SettingsChanged work-queue item. onSettingsChanged() runs on Kodi's GUI
 thread and MUST return fast.
 
+B4 — Re-entrancy guard (`_suppress_event`):
+  The T4 handler responds to SettingsChanged by writing derived display
+  fields back into Kodi settings via setSetting (status_display,
+  bot_username, pairing_command). Each setSetting triggers a fresh
+  onSettingsChanged callback on the GUI thread, which would re-enqueue
+  another SettingsChanged work item, which T4 would then process — a
+  self-amplifying flood that pegs the work queue with redundant
+  validation passes and (in pathological cases) loops.
+
+  The cleanest fix is a module-level threading.Event that the handler
+  SETS while it's actively writing back derived fields and CLEARS when
+  done. onSettingsChanged checks the flag and short-circuits if set,
+  preserving the user's actual edits (which happen outside the handler's
+  active window) but suppressing the cascade.
+
+  threading.Event is thread-safe (GIL + atomic set/clear/is_set), so a
+  global flag works correctly across the GUI thread (which checks) and
+  T4 (which sets/clears).
+
 Spec: v0.3.0 settings-inline setup pivot.
 """
 from __future__ import annotations
@@ -24,6 +43,40 @@ import time
 import xbmc
 
 from .concurrency import SettingsChanged, work_queue
+
+
+# B4 — Module-level re-entrancy flag. The T4 settings-changed handler
+# SETS this while it's writing derived display fields back into Kodi
+# settings via setSetting, and CLEARS it when done. KodiAiMonitor
+# checks it on every onSettingsChanged callback and short-circuits if
+# set, breaking the self-triggered onSettingsChanged cascade.
+_suppress_event = threading.Event()
+
+
+def suppress_settings_changed() -> "_SuppressContext":
+    """Context manager: SETs _suppress_event for the duration of the
+    `with` block, then CLEARs it. Used by the T4 handler when writing
+    derived display fields so the resulting onSettingsChanged callbacks
+    don't recursively enqueue more SettingsChanged work items.
+
+    Nesting is safe (no-op semantics: nested entries don't re-set, and
+    only the outermost exit clears) — but the only call site is the
+    settings-changed handler which never nests, so we keep the
+    implementation flat.
+    """
+    return _SuppressContext()
+
+
+class _SuppressContext:
+    """Context manager for suppress_settings_changed()."""
+
+    def __enter__(self):
+        _suppress_event.set()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        _suppress_event.clear()
+        return False  # don't swallow exceptions
 
 
 class KodiAiMonitor(xbmc.Monitor):
@@ -47,6 +100,12 @@ class KodiAiMonitor(xbmc.Monitor):
 
     def onSettingsChanged(self) -> None:  # noqa: N802 — Kodi API method name
         """Kodi calls this on GUI thread after settings dialog OK/apply."""
+        # B4 — Skip self-triggered events. T4 holds _suppress_event while
+        # it writes derived display fields; those writes generate
+        # onSettingsChanged callbacks that would otherwise re-enqueue
+        # more SettingsChanged items and cause a self-amplifying flood.
+        if _suppress_event.is_set():
+            return
         # Best-effort enqueue. The queue is bounded (maxsize=500); if it's
         # full, dropping is safe because the user's next settings edit
         # will re-trigger this. We never block the GUI thread.
