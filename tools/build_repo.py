@@ -144,14 +144,35 @@ def main(argv: list[str] | None = None) -> int:
     repo_zip = make_repository_addon(out_dir, version)
     print(f"Built repository addon: {repo_zip}")
 
-    # 5. Small index.html so /repo/ is browsable
+    # 5. Apache-style directory listing for /repo/ so Kodi's HTTPDirectory
+    #    can browse it. Kodi's parser matches <a href="X">X</a> where the
+    #    link text equals the basename of the href.
     with open(os.path.join(repo_dir, "index.html"), "w", encoding="utf-8") as f:
         f.write(
-            '<!doctype html><meta charset=utf-8><title>Kodi-AI Repo</title>'
-            '<p>Kodi-AI add-on repository. <a href="../">Project README</a>.</p>'
+            '<!doctype html><html><head><meta charset="utf-8"><title>Index of /repo</title></head>\n'
+            '<body><h1>Index of /repo</h1><pre>\n'
+            '<a href="../">../</a>\n'
+            '<a href="addons.xml">addons.xml</a>\n'
+            '<a href="addons.xml.md5">addons.xml.md5</a>\n'
+            f'<a href="{addon_id}/">{addon_id}/</a>\n'
+            '</pre></body></html>\n'
         )
 
-    # 6. Friendly landing page at dist/index.html with direct download links
+    # 5b. Directory listing for /repo/{addon_id}/ — Kodi follows this when
+    #     resolving the <datadir> URL during repo install.
+    with open(os.path.join(addon_repo_dir, "index.html"), "w", encoding="utf-8") as f:
+        f.write(
+            '<!doctype html><html><head><meta charset="utf-8">'
+            f'<title>Index of /repo/{addon_id}</title></head>\n'
+            f'<body><h1>Index of /repo/{addon_id}</h1><pre>\n'
+            '<a href="../">../</a>\n'
+            f'<a href="{addon_zip_name}">{addon_zip_name}</a>\n'
+            '</pre></body></html>\n'
+        )
+
+    # 6. Landing page at dist/index.html — hybrid: Apache-style bare links
+    #    at the TOP so Kodi's HTML directory parser sees the zips, styled
+    #    landing UI below for human browsers.
     repo_zip_name = os.path.basename(repo_zip)
     landing_html = f'''<!doctype html>
 <html lang="en">
@@ -172,11 +193,22 @@ def main(argv: list[str] | None = None) -> int:
   code {{ background: #f1f3f5; padding: 1px 5px; border-radius: 3px; }}
   hr {{ border: 0; border-top: 1px solid #e5e7eb; margin: 32px 0; }}
   a {{ color: #00a2db; }}
+  .filelist {{ font-family: ui-monospace, monospace; background: #f8f9fa;
+              padding: 12px 16px; border-radius: 6px; margin: 16px 0; }}
+  .filelist a {{ display: block; padding: 2px 0; }}
 </style>
 </head>
 <body>
 <h1>Kodi-AI</h1>
 <p class="sub">AI-assisted Kodi diagnostics + auto-fix, surfaced over Telegram.</p>
+
+<p><b>Files</b> (Kodi-friendly listing — link text matches filename so
+Kodi's "Install from zip file" browser picks them up):</p>
+<div class="filelist">
+<a href="{repo_zip_name}">{repo_zip_name}</a>
+<a href="service.kodi.ai-{version}.zip">service.kodi.ai-{version}.zip</a>
+<a href="repo/">repo/</a>
+</div>
 
 <p><b>Quick install</b> (recommended path — Kodi 21 Omega on Android TV):</p>
 <a class="btn" href="{repo_zip_name}">Download repository zip ({version})</a>
