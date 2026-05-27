@@ -17,16 +17,20 @@ cloud state. Long-poll Telegram only. All session data lives on the device.
 ### Method 1: Repository (recommended)
 
 1. On Android TV, enable **Settings → System → Add-ons → Unknown sources**.
-2. Download `repository.kodi-ai.stigmavlc-0.1.0.zip` from this repo's
-   Releases page (or build it yourself, see below).
-3. In Kodi: **Add-ons → Install from zip file →** select the repository zip.
-4. **Add-ons → Install from repository → Kodi-AI Repository → Services →
+2. Download the repository zip on any device:
+   <https://stigmavlc.github.io/Kodi-AI/repository.kodi-ai.stigmavlc-0.1.0.zip>
+3. Transfer the zip to your Shield Pro (USB stick or
+   `/storage/emulated/0/Download/`).
+4. In Kodi: **Add-ons → Install from zip file →** select the repository zip.
+5. **Add-ons → Install from repository → Kodi-AI Repository → Services →
    Kodi-AI → Install.**
-5. Updates ship through the repository on every push to `main`.
+6. Updates ship through the repository on every push to `main` of this
+   GitHub repo.
 
 ### Method 2: Direct zip
 
-1. Build (or download) `service.kodi.ai-0.1.0.zip`.
+1. Download the addon zip:
+   <https://stigmavlc.github.io/Kodi-AI/service.kodi.ai-0.1.0.zip>
 2. Copy it to a USB stick or to `/storage/emulated/0/Download/` on the Shield.
 3. In Kodi: **Add-ons → Install from zip file →** select the addon zip.
 
