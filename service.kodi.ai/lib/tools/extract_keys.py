@@ -39,6 +39,7 @@ def path_flatten_parser(raw: bytes) -> dict[str, str]:
 
     def walk(elem, path):
         children = list(elem)
+        # Group children by tag for [N] indexing
         by_tag: dict[str, list] = {}
         for c in children:
             by_tag.setdefault(_strip_ns(c.tag), []).append(c)
