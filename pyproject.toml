@@ -1,8 +1,7 @@
 [tool.pytest.ini_options]
 testpaths = ["tests/unit", "tests/integration"]
+pythonpath = ["service.kodi.ai", "."]
 python_files = ["test_*.py"]
-python_classes = ["Test*"]
-python_functions = ["test_*"]
 addopts = "-v --strict-markers --cov=service.kodi.ai/lib --cov-report=term-missing"
 markers = [
     "integration: integration tests requiring kodistubs",

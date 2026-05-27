@@ -1,7 +1,18 @@
-"""Integration test fixtures. Fakes for xbmc/xbmcgui/xbmcvfs are wired here
-before any lib.* import. See Task 4.x for fake_xbmc / fake_xbmcvfs / etc."""
+# tests/integration/conftest.py
 import sys
+import pytest
+from tests.integration.fakes import fake_xbmcvfs
 
-# Placeholder — will be replaced by real fake registration in later tasks.
+# Register xbmcvfs fake so lib.* imports see it
+sys.modules["xbmcvfs"] = fake_xbmcvfs
+
+
+@pytest.fixture(autouse=True)
+def reset_fake_fs():
+    fake_xbmcvfs.reset_test_fs()
+    yield
+    fake_xbmcvfs.reset_test_fs()
+
+
 def pytest_configure(config):
     config.addinivalue_line("markers", "integration: kodistubs-backed integration test")
