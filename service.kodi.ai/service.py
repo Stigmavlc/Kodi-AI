@@ -362,30 +362,26 @@ def t4_worker_body(bot) -> None:
         pass
 
     # First-launch guidance: if neither OpenRouter key nor bot token is set,
-    # this Kodi session begins with the addon unconfigured. Pop a friendly
-    # toast + auto-open the wizard so the user isn't left guessing where to
-    # click. This runs ONCE per Kodi boot (the service is restarted on each
-    # Kodi launch) so it doesn't nag forever — but until the user finishes
-    # setup, every Kodi launch reminds them.
+    # show a passive toast so the user knows setup is pending. NEVER auto-
+    # opens the wizard (that would be intrusive mid-playback) — just a 5s
+    # toast in the corner. Shown once per Kodi boot until setup completes.
     try:
         _has_key = bool(lib_secrets.get_secret("openrouter_key"))
         _has_bot = bool(lib_secrets.get_secret("bot_token"))
         if not (_has_key and _has_bot):
             import xbmcgui
-            xbmcgui.Dialog().notification(
-                "Kodi-AI", "Tap to set up — opening wizard...",
-                icon=os.path.join(os.path.dirname(os.path.dirname(__file__)),
-                                  "service.kodi.ai", "icon.png"),
-                time=5000, sound=False,
+            _icon_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "icon.png"
             )
-            # Brief delay so the toast renders before the modal wizard takes
-            # focus; then trigger the wizard via Kodi's built-in script runner.
-            time.sleep(2.0)
-            xbmc.executebuiltin(
-                'RunScript(special://home/addons/service.kodi.ai/default.py,setup_wizard)'
+            xbmcgui.Dialog().notification(
+                "Kodi-AI",
+                "Setup needed — open from Programs or Settings",
+                icon=_icon_path if os.path.exists(_icon_path) else "",
+                time=6000,
+                sound=False,
             )
     except Exception as e:
-        xbmc.log(f"[service.kodi.ai] first-launch wizard trigger failed: {e}",
+        xbmc.log(f"[service.kodi.ai] first-launch toast failed: {e}",
                  xbmc.LOGWARNING)
 
     startup_complete_event.set()
