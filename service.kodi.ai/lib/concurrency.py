@@ -242,3 +242,93 @@ class MonotonicBudget:
         b.state = BudgetState[blob["state"]]
         # started_at intentionally None on rehydrate — resume() will set it.
         return b
+
+
+# ---- ActiveCalls — two-scope bracketing for reasoner→log loop prevention ----
+from typing import Union
+
+_AddonTargets = Union[set[str], Literal["ALL"]]
+
+
+class ActiveCalls:
+    """Tracks active tool + session brackets with target-addon scoping + linger.
+
+    T4 calls add_tool(call_id, target_addons) BEFORE each tool call and
+    schedule_remove_tool(call_id, after=1s) AFTER. The 1s linger catches
+    delayed log writes (addon shutdown messages, async log flush).
+
+    T2 checks is_active() / get_active_target_addons() per line to decide
+    whether to buffer (for post-window evaluation).
+
+    target_addons can be a set[str] OR the literal "ALL" (e.g. for Kodi-wide
+    setting changes). "ALL" subsumes any set when unioned.
+
+    update_tool_target() exists for tools whose targets aren't known at add_tool
+    time (e.g. install_addon resolves dep closure mid-flight).
+
+    Spec: §1.2 (state), §1.3 (loop prevention).
+    """
+    def __init__(self):
+        self._active_tools: dict[str, _AddonTargets] = {}
+        self._active_sessions: set[str] = set()
+        # _linger keys: ("tool", call_id) or ("session", sid)
+        # _linger values: (expiry_monotonic_ts, target_addons | None)
+        self._linger: dict[tuple[str, str], tuple[float, _AddonTargets | None]] = {}
+        self._lock = threading.Lock()
+
+    def _purge_expired(self):
+        """Remove expired linger entries. Called under _lock."""
+        now = time.monotonic()
+        expired = [k for k, (t, _) in self._linger.items() if t <= now]
+        for k in expired:
+            kind, ident = k
+            if kind == "tool":
+                self._active_tools.pop(ident, None)
+            elif kind == "session":
+                self._active_sessions.discard(ident)
+            self._linger.pop(k)
+
+    def add_tool(self, call_id: str, target_addons: _AddonTargets) -> None:
+        with self._lock:
+            self._active_tools[call_id] = target_addons
+
+    def update_tool_target(self, call_id: str, target_addons: _AddonTargets) -> None:
+        """Refine target_addons after deferred resolution (e.g. dep closure)."""
+        with self._lock:
+            if call_id in self._active_tools:
+                self._active_tools[call_id] = target_addons
+
+    def schedule_remove_tool(self, call_id: str, after: float = 1.0) -> None:
+        with self._lock:
+            tgt = self._active_tools.get(call_id)
+            self._linger[("tool", call_id)] = (time.monotonic() + after, tgt)
+
+    def add_session(self, session_id: str) -> None:
+        with self._lock:
+            self._active_sessions.add(session_id)
+
+    def schedule_remove_session(self, session_id: str, after: float = 2.0) -> None:
+        with self._lock:
+            self._linger[("session", session_id)] = (time.monotonic() + after, None)
+
+    def is_active(self) -> bool:
+        with self._lock:
+            self._purge_expired()
+            return bool(self._active_tools or self._active_sessions)
+
+    def get_active_target_addons(self) -> _AddonTargets:
+        """Union of all active tools' target_addons. Returns 'ALL' if any tool
+        targets ALL. Used by T2 to decide whether a parsed line falls under
+        our scope (should be buffered for post-window eval)."""
+        with self._lock:
+            self._purge_expired()
+            union: set[str] = set()
+            for targets in self._active_tools.values():
+                if targets == "ALL":
+                    return "ALL"
+                union |= targets
+            return union
+
+
+# Module-level instance used by T4 (reasoner / tool dispatch)
+active_calls = ActiveCalls()
