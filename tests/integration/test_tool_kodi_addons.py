@@ -93,3 +93,62 @@ def test_restart_addon_disruptive_when_player_active(fake_kodi):
     assert _restart_disruptive_fn({"addon_id": "plugin.video.seren"}) is True
     fake_kodi._state["play_active"] = False
     assert _restart_disruptive_fn({"addon_id": "plugin.video.seren"}) is False
+
+
+@pytest.mark.integration
+def test_uninstall_addon_clears_state(fake_kodi):
+    # Wire UninstallAddon(...) so the fake state mutates → details return None.
+    state = fake_kodi._state
+    original_be = fake_kodi.executebuiltin.side_effect
+    def be(cmd):
+        if cmd.startswith("UninstallAddon("):
+            aid = cmd[len("UninstallAddon("):-1]
+            state["addons"].pop(aid, None)
+            return
+        return original_be(cmd)
+    fake_kodi.executebuiltin.side_effect = be
+
+    from lib.tools.kodi_addons import uninstall_addon
+    res = uninstall_addon(addon_id="plugin.video.seren")
+    assert res.success
+    assert res.requested.startswith("uninstall_addon")
+    assert "plugin.video.seren" not in state["addons"]
+
+
+@pytest.mark.integration
+def test_update_addon_returns_warning_on_no_version_change(fake_kodi, monkeypatch):
+    # Shrink the update timeout to 2s for the test.
+    from lib.tools import kodi_addons
+    monkeypatch.setattr(kodi_addons, "_UPDATE_TIMEOUT_S", 2.0)
+
+    res = kodi_addons.update_addon(addon_id="plugin.video.seren")
+    assert res.requested.startswith("update_addon")
+    # No version change → success with warning per spec §4.6 round-3.
+    assert res.success is True
+    assert res.warning == "already at latest or repo unreachable"
+
+
+@pytest.mark.integration
+def test_clear_addon_cache_returns_result(fake_kodi, tmp_path, monkeypatch):
+    # Stage a fake cache dir under profile + __pycache__ under install path
+    # so clear_addon_cache exercises both delete branches.
+    from lib.tools import kodi_addons
+    from lib import state_paths
+    cache_dir = state_paths.profile_path("addon_data/plugin.video.seren/cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    with open(os.path.join(cache_dir, "stale.dat"), "w") as f:
+        f.write("x")
+    install_path = fake_kodi._state["addons"]["plugin.video.seren"]["path"]
+    pycache = os.path.join(install_path, "__pycache__")
+    os.makedirs(pycache, exist_ok=True)
+    with open(os.path.join(pycache, "mod.cpython-314.pyc"), "w") as f:
+        f.write("x")
+
+    res = kodi_addons.clear_addon_cache(addon_id="plugin.video.seren")
+    assert res.requested.startswith("clear_addon_cache")
+    # restart_addon is folded; success depends on disable+enable round-trip,
+    # which the fake supports → True.
+    assert res.success is True
+    # Both cache locations should be gone.
+    assert not os.path.exists(cache_dir)
+    assert not os.path.exists(pycache)

@@ -12,6 +12,12 @@ import time
 from .kodi_jsonrpc import call as jrpc
 import xbmc
 from . import tool, ToolResult
+from .. import state_paths
+
+
+# Tunable timeouts (module-level so tests can monkeypatch shorter values).
+_UPDATE_TIMEOUT_S: float = 60.0
+_UNINSTALL_TIMEOUT_S: float = 10.0
 
 
 # ---- builtin_with_verify helper ----
@@ -206,12 +212,131 @@ def install_addon(addon_id: str) -> ToolResult:
                       snapshot_id=None, cost_seconds=0.0)
 
 
-# ---- uninstall_addon, update_addon, clear_addon_cache ----
-# Pattern repeats; implementation analogous to install/disable. Per spec §4.6:
-# - uninstall: tier=confirm, disruptive=owns_player, target_addons={addon_id}
-# - update_addon: pre-fetch old version, call UpdateAddon(), verify version changed OR
-#   no recurrence in 60s → success "already at latest or repo unreachable" (with warning)
-# - clear_addon_cache: tier=immediate, disruptive=owns_player. Delete
-#   addon_data/<id>/cache/ + <install_path>/__pycache__/, then restart_addon().
+# ---- uninstall_addon ----
+@tool(
+    name="uninstall_addon",
+    description="Uninstall an addon. Disruptive if it owns the active player.",
+    schema={"type": "object", "properties": {"addon_id": {"type": "string"}},
+            "required": ["addon_id"]},
+    tier="confirm",
+    disruptive=_disruptive_when_owns_player,
+    target_addons=lambda args: {args.get("addon_id")},
+)
+def uninstall_addon(addon_id: str) -> ToolResult:
+    ok = builtin_with_verify(
+        f"UninstallAddon({addon_id})",
+        verify=lambda: _addon_details(addon_id) is None,
+        timeout_s=_UNINSTALL_TIMEOUT_S,
+    )
+    return ToolResult(
+        success=ok, requested=f"uninstall_addon({addon_id})",
+        output=None,
+        actual_state_after={"installed": _addon_details(addon_id) is not None},
+        error=None if ok else f"UninstallAddon did not remove addon within {_UNINSTALL_TIMEOUT_S}s",
+        snapshot_id=None, cost_seconds=0.0,
+    )
 
-# (Full implementations land in Task 7.4 — same pattern as above.)
+
+# ---- update_addon ----
+@tool(
+    name="update_addon",
+    description=("Update an addon to the latest version available. "
+                 "On no version change within 60s: success with warning "
+                 "'already at latest or repo unreachable'."),
+    schema={"type": "object", "properties": {"addon_id": {"type": "string"}},
+            "required": ["addon_id"]},
+    tier="confirm",
+    target_addons=lambda args: {args.get("addon_id")},
+)
+def update_addon(addon_id: str) -> ToolResult:
+    # Round-3 verify logic per spec §4.6.
+    pre = _addon_details(addon_id) or {}
+    old_version = pre.get("version")
+    xbmc.executebuiltin(f"UpdateAddon({addon_id})")
+
+    # Poll every 1s up to _UPDATE_TIMEOUT_S for version change. Interruptible
+    # via abort_event (mirrors builtin_with_verify discipline).
+    from ..concurrency import abort_event
+    deadline = time.monotonic() + _UPDATE_TIMEOUT_S
+    new_version = old_version
+    version_changed = False
+    while time.monotonic() < deadline:
+        if abort_event.wait(1.0):
+            break
+        cur = _addon_details(addon_id) or {}
+        new_version = cur.get("version")
+        if new_version and new_version != old_version:
+            version_changed = True
+            break
+
+    if version_changed:
+        return ToolResult(
+            success=True, requested=f"update_addon({addon_id})",
+            output=f"updated {old_version}->{new_version}",
+            actual_state_after={"version": new_version},
+            error=None, snapshot_id=None, cost_seconds=0.0,
+        )
+
+    # Timeout: cluster recurrence check is a noop in V1 — log_watcher.subscribe
+    # wiring lands in Task 7.7. For now: treat timeout-without-change as success
+    # with warning per spec §4.6 round-3 mapping.
+    # TODO(Task 7.7): if cluster recurrence is observed within timeout window,
+    # return success=False with error="update failed; error recurrence in log".
+    return ToolResult(
+        success=True, requested=f"update_addon({addon_id})",
+        output=None,
+        actual_state_after={"version": new_version},
+        error=None, snapshot_id=None, cost_seconds=0.0,
+        warning="already at latest or repo unreachable",
+    )
+
+
+# ---- clear_addon_cache ----
+@tool(
+    name="clear_addon_cache",
+    description=("Delete addon's runtime cache + __pycache__, then restart the "
+                 "addon to invalidate already-loaded modules."),
+    schema={"type": "object", "properties": {"addon_id": {"type": "string"}},
+            "required": ["addon_id"]},
+    tier="immediate",
+    disruptive=_disruptive_when_owns_player,
+    target_addons=lambda args: {args.get("addon_id")},
+)
+def clear_addon_cache(addon_id: str) -> ToolResult:
+    warning: str | None = None
+
+    # 1) addon_data/<id>/cache — under writable profile path.
+    cache_dir = state_paths.profile_path(f"addon_data/{addon_id}/cache")
+    try:
+        if os.path.isdir(cache_dir):
+            shutil.rmtree(cache_dir)
+    except PermissionError as e:
+        return ToolResult(
+            success=False, requested=f"clear_addon_cache({addon_id})",
+            output=None, actual_state_after=None,
+            error=f"cannot purge cache: {e}",
+            snapshot_id=None, cost_seconds=0.0,
+        )
+
+    # 2) <install_path>/__pycache__ — may be read-only on system-installed addons.
+    a = _addon_details(addon_id) or {}
+    install_path = a.get("path")
+    if install_path:
+        pycache_dir = os.path.join(install_path, "__pycache__")
+        try:
+            if os.path.isdir(pycache_dir):
+                shutil.rmtree(pycache_dir)
+        except PermissionError:
+            warning = "cannot purge pycache: addon install path read-only"
+
+    # 3) Restart the addon to invalidate already-loaded modules.
+    r = restart_addon(addon_id=addon_id)
+    return ToolResult(
+        success=r.success,
+        requested=f"clear_addon_cache({addon_id})",
+        output=None,
+        actual_state_after=r.actual_state_after,
+        error=r.error,
+        snapshot_id=None, cost_seconds=0.0,
+        warning=warning,
+    )
