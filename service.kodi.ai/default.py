@@ -421,8 +421,8 @@ def setup_wizard() -> None:
         f"  [B][COLOR {COLOR_ACCENT}]3.[/COLOR][/B]  Type a [B]username[/B] — must be unique and end in [B]bot[/B]:\n"
         f"      e.g. [I]\"ivan_kodi_helper_bot\"[/I] or [I]\"shieldwatcher_bot\"[/I]\n"
         f"      If taken, BotFather will tell you — just try another name.\n\n"
-        f"  [B][COLOR {COLOR_ACCENT}]4.[/COLOR][/B]  BotFather replies with a long [B]TOKEN[/B], like:\n"
-        f"      [COLOR {COLOR_ACCENT}]1234567890:AAEhBHl_ABcDeFgHiJkLmNoPqRsTuVwXyZ[/COLOR]\n\n"
+        f"  [B][COLOR {COLOR_ACCENT}]4.[/COLOR][/B]  BotFather replies with a long [B]TOKEN[/B] in the format:\n"
+        f"      [COLOR {COLOR_ACCENT}]<10-digit ID>[/COLOR][B]:[/B][COLOR {COLOR_ACCENT}]<35 random letters/digits/_-+>[/COLOR]\n\n"
         f"  [B][COLOR {COLOR_OK}]5.[/COLOR][/B]  [B]Copy that whole token[/B] — you'll paste it on the next screen.\n",
     )
 
@@ -447,8 +447,8 @@ def setup_wizard() -> None:
         f"{_h1('Paste the bot token')}\n{_HR}\n\n"
         f"On the next screen, paste the long [B]token[/B] BotFather gave you.\n\n"
         f"{_dim('Format reminder:')}\n"
-        f"   [COLOR {COLOR_ACCENT}]1234567890:AAEhBHl_ABcDeFgHiJkLmNoPqRsTuVwXyZ[/COLOR]\n\n"
-        f"{_dim('(numbers, colon, then a longer letters+numbers+_-+ string)')}",
+        f"   [COLOR {COLOR_ACCENT}]<10-digit ID>[/COLOR][B]:[/B][COLOR {COLOR_ACCENT}]<35-char secret>[/COLOR]\n\n"
+        f"{_dim('(digits, colon, then a 35-character letters+digits+_-+ string)')}",
     )
     bot_token = d.input(
         "Telegram bot_token  (paste from BotFather)",
