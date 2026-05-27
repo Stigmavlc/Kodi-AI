@@ -1,9 +1,9 @@
 # Kodi-AI V1 — Session Handover
 
-**Last updated:** 2026-05-27 (in-session: Phases 1-4 COMPLETE + Tasks 5.1 + 5.2 done, reviewer-vetted)
+**Last updated:** 2026-05-27 (in-session: Phases 1-4 COMPLETE + Tasks 5.1-5.4 (combined REVISED+AMEND) done, reviewer-vetted)
 **Project root:** `/Users/ivan/Desktop/Web Development  Projects/Completed By Me/Kodi-AI/`
 **Git branch:** `main`
-**Latest commit:** `2391129` (feat(reasoner_state): SessionState + atomic persist/load/unlink)
+**Latest commit:** `118aac6` (fix(reasoner): add synthetic envelope to messages on budget trip)
 
 This document tracks **exactly what's left to implement**, by phase and by task, so any future session can pick up cleanly. It is read by the `/load-context` slash command at session start and updated by `/save-context` at session end.
 
@@ -95,9 +95,8 @@ Per task, the plan's own task ID maps to a line range in `docs/superpowers/plans
 |---|---|---|
 | 5.1 `lib/triage.py` (TokenBucket + cheap-LLM classify) | ✅ done | `733a1e3`. Spec §1.6. Plan-verbatim, ZERO deviations. 117/117 unit tests pass. Both reviewers CLEAN. |
 | 5.2 `lib/reasoner_state.py` (SessionState dataclass + atomic write + load + list_all) | ✅ done | `2391129`. Spec §1.7, §5.7. Plan-verbatim. Re-bind 9th file. 123/123 unit tests pass. Both reviewers CLEAN. |
-| 5.3 `lib/reasoner.py` skeleton (Reasoner class + run_simple) | ⏸ pending | Spec §1.6, §1.7, §3.1, §3.3 |
-| **5.4-REVISED** Reasoner uses `chat_stream` + per-chunk mid-stream budget check | ⏸ pending | Spec §1.10, §5.5. **Round-1 plan-review fix C3.** Synthetic envelope on mid-stream trip. |
-| **5.4-AMENDMENT** Populate `tool_history[].output_signature` | ⏸ pending | Spec §1.4. **Round-2 plan-review fix.** Required for 4.7-REVISED tool-history-match suppression. |
+| 5.3 `lib/reasoner.py` skeleton (Reasoner class + run_simple) | ✅ done | `7bc6d7f`. Spec §1.6, §1.7, §3.1, §3.3. Plan-verbatim. 125/125 unit tests pass. Both reviewers CLEAN. |
+| **5.4-REVISED + 5.4-AMENDMENT (combined)** Reasoner chat_stream + tool loop + tool_history with output_signature | ✅ done | First pass `8f741c3` (combined Original + REVISED + AMENDMENT into one commit). Code-quality reviewer found 1 blocker: synthetic envelope `messages.append` lines omitted. Fix `118aac6`. 128 unit + 11 integration pass. chat_stream extended to 4-tuple. Resolves §4 #58. |
 | 5.5 Reasoner pause/resume + abort_event check + `resume_from` | ⏸ pending | Spec §1.7, §1.8, §1.10 |
 | **5.6** `lib/pause_sequence.py` (explicit 4-step pause sequence) | ⏸ pending | Spec §1.7. **Round-1 plan-review fix C4.** pause_and_persist enforces memory → MonotonicBudget.pause → atomic disk → Telegram 15s → pause_notify_failed terminal. |
 
