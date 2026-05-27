@@ -1,9 +1,9 @@
 # Kodi-AI V1 — Session Handover
 
-**Last updated:** 2026-05-27 (in-session: Phases 1 + 2 + 3 COMPLETE, reviewer-vetted)
+**Last updated:** 2026-05-27 (in-session: Phases 1-3 COMPLETE + Tasks 4.1-4.3 done, reviewer-vetted)
 **Project root:** `/Users/ivan/Desktop/Web Development  Projects/Completed By Me/Kodi-AI/`
 **Git branch:** `main`
-**Latest commit:** `81a2f20` (feat(llm.prompts): triage/reasoner/chat system prompts + loader)
+**Latest commit:** `af8c30b` (feat(prefilter): signature normalization + benign-noise allowlist)
 
 This document tracks **exactly what's left to implement**, by phase and by task, so any future session can pick up cleanly. It is read by the `/load-context` slash command at session start and updated by `/save-context` at session end.
 
@@ -81,9 +81,9 @@ Per task, the plan's own task ID maps to a line range in `docs/superpowers/plans
 
 | Task | Status | Notes |
 |---|---|---|
-| 4.1 `lib/log_capture.py` (logging.Handler + stderr wrapper + recursion guard + 1s dedup) | ⏸ pending | Spec §5.9 |
-| 4.2 `lib/log_sentinels.py` (LOGINFO audit sentinels + parse_sentinel) | ⏸ pending | Spec §1.3, §5.6 |
-| 4.3 `lib/prefilter.py` (signature normalization + benign allowlist) | ⏸ pending | Spec §1.4 |
+| 4.1 `lib/log_capture.py` (logging.Handler + stderr wrapper + recursion guard + 1s dedup) | ✅ done | `55c6636`. Spec §5.9. Plan-verbatim except (a) test re-bind (7th file) and (b) UNJUSTIFIED-but-harmless cosmetic `→` → `->` in module docstring. 101/101 unit tests pass. Both reviewers CLEAN. |
+| 4.2 `lib/log_sentinels.py` (LOGINFO audit sentinels + parse_sentinel) | ✅ done | `9512369`. Spec §1.3, §5.6. Plan-locked test data (`xyz789`) required regex broadening from `[a-f0-9]+` → `[a-z0-9]+` (plan defect — see §4 #71). Test re-bind 8th file. 104/104 unit tests pass. Both reviewers CLEAN. |
+| 4.3 `lib/prefilter.py` (signature normalization + benign allowlist) | ✅ done | `af8c30b`. Spec §1.4. Plan-verbatim, ZERO deviations. 112/112 unit tests pass. Both reviewers CLEAN. |
 | 4.4 `lib/log_watcher.py` core (poll/parse/cluster/enqueue) | ⏸ pending | Spec §1.4, §3.1 |
 | 4.5 log_watcher 3-signal rotation + 1MB cap + adaptive cadence | ⏸ pending | Spec §1.4 |
 | **4.6-REVISED** log_watcher buffer-and-evaluate per-tool-boundary | ⏸ pending | Spec §1.3, §1.5. **Round-1 plan-review fix C5.** Supersedes original 4.6. Requires `ActiveCalls.last_window_targets()` from Task 1.5. |
@@ -308,6 +308,16 @@ These are issues caught by reviewers during Phase 0 that are NOT yet fixed and s
 66. **`prompts.py` `meta.get("prompt_version", "0.0.0")` silent default** (Task 3.5 code review, plan-locked): if a future prompt is missing the version field, version silently becomes `"0.0.0"` and audit logs record a nonsensical version. Add startup validation to fail-fast on missing frontmatter in Task 11.1.
 
 67. **`test_prompts.py` `"---" not in p.body` assertion is maintenance booby-trap** (Task 3.5 code review): a future prompt with legitimate markdown horizontal rule (`---`) in body fails the test. Plan-locked; documented for future authors.
+
+68. **Implementer gold-plating: `→` → `->` cosmetic substitution in log_capture.py docstring** (Task 4.1): unjustified by stated "encoding issues" rationale (Python 3 source defaults to UTF-8 via PEP 3120). Harmless but indicates risk of locked-plan drift. Future implementer prompts now explicitly call out: "preserve unicode characters verbatim from plan; do NOT 'fix' encoding for cosmetic reasons."
+
+69. **`log_capture.py` coverage gaps** (Task 4.1 code review): LRU GC overflow path, bytes-write to stderr, partial-line buffering, level mapping, install() idempotency, verbose flag, multi-thread install() race. Plan-locked at 4 tests. Address in Phase 11 integration tests.
+
+70. **`log_capture._StreamRedirect` unbounded buffer if no newline** (Task 4.1, plan-locked): a library that writes 10MB+ without `\n` to stderr would balloon the buffer. Theoretical OOM. Kodi addons typically line-terminate; acceptable V1 trade-off.
+
+71. **🔧 PLAN DEFECT — Task 4.2 regex `[a-f0-9]+` vs test data `xyz789`** (Task 4.2 spec review): plan line 4094 regex would never match plan line 4061 test (`xyz789` has non-hex chars). Implementer broadened to `[a-z0-9]+`. Runtime impact none (real session IDs from `secrets.token_hex` are hex, strict subset of `[a-z0-9]+`). Fix plan at next revision.
+
+72. **HANDOVER.md drift during heavy task throughput** (this session, 2026-05-27): pre-commit hook stash/restore lost HANDOVER.md unstaged edits between Tasks 4.1 + 4.2 + 4.3 (recovered + re-applied here). **Action: from now on, commit HANDOVER.md after EVERY task** (not just at phase boundaries) to avoid stash-race re-loss.
 
 ---
 
