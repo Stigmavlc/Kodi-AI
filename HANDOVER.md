@@ -1,9 +1,9 @@
 # Kodi-AI V1 — Session Handover
 
-**Last updated:** 2026-05-27 (in-session: Phase 1 COMPLETE — all 6 tasks reviewer-vetted)
+**Last updated:** 2026-05-27 (in-session: Phases 1 + 2 COMPLETE, reviewer-vetted)
 **Project root:** `/Users/ivan/Desktop/Web Development  Projects/Completed By Me/Kodi-AI/`
 **Git branch:** `main`
-**Latest commit:** `d7b28fe` (feat(concurrency): ActiveCalls — two-scope bracketing with linger)
+**Latest commit:** `fc7aff4` (feat(audit_log): write_tool_call helper with pair-level redaction)
 
 This document tracks **exactly what's left to implement**, by phase and by task, so any future session can pick up cleanly. It is read by the `/load-context` slash command at session start and updated by `/save-context` at session end.
 
@@ -62,10 +62,10 @@ Per task, the plan's own task ID maps to a line range in `docs/superpowers/plans
 
 | Task | Status | Notes |
 |---|---|---|
-| 2.1 `lib/audit_log.py` (JSONL append + 10MB×5 rotation) | ⏸ pending | Spec §5.3 |
-| 2.2 `lib/secrets.py` (in-memory cache + 0600 best-effort + atomic write) | ⏸ pending | Spec §5.1 |
-| 2.3 `lib/redactor.py` (patterns + heuristic + allow_list + canary) | ⏸ pending | Spec §5.8. Creates `redaction_allowlist.json` + `known_secret_keys.json` data files. |
-| 2.4 Wire `redact()` into `audit_log.write_tool_call` (pair-level redaction) | ⏸ pending | Spec §5.3, §5.8 |
+| 2.1 `lib/audit_log.py` (JSONL append + 10MB×5 rotation) | ✅ done | `3d3f046`. Spec §5.3. Production code plan-verbatim. Test fixture re-bind (`monkeypatch.setattr(sys.modules["lib.state_paths"], "xbmcvfs", ...)`) added per established pattern (3rd test file to need it; conftest.py helper NOT yet DRY'd — see §4 #15). 43/43 unit tests pass. Both reviewers CLEAN. |
+| 2.2 `lib/secrets.py` (in-memory cache + 0600 best-effort + atomic write) | ✅ done | `b29fdaf`. Spec §5.1. Production plan-verbatim. Test re-bind deviation (4th file using pattern, conftest.py still NOT DRY'd). 49/49 unit tests pass. Both reviewers CLEAN. |
+| 2.3 `lib/redactor.py` (patterns + heuristic + allow_list + canary) | ✅ done | First pass `c678021` (with TWO plan-defect-corrections; spec reviewer CLEAN, code-quality reviewer found 2 HIGH canary-coverage blockers). Fix `90d9859` (canary newlines + Anthropic token). Both reviewers CLEAN on fix. 64/64 unit tests pass. Mutation-verified all 10 patterns independently observable. ⚠️ Plan defects #38 + #39 require plan-file updates. |
+| 2.4 Wire `redact()` into `audit_log.write_tool_call` (pair-level redaction) | ✅ done | `fc7aff4`. Spec §5.3, §5.8. Production plan-verbatim. Test re-bind deviation (5th file using pattern). 66/66 unit tests pass. Both reviewers CLEAN. ⚠️ Forward-looking: `get_addon_setting` (read-path) gets fabricated `value="<redacted>"` field in audit record — misleading, but no data leak. Plan-locked. |
 
 ### Phase 3 — LLM client + router + budget + prompts (5 tasks)
 
@@ -232,6 +232,34 @@ These are issues caught by reviewers during Phase 0 that are NOT yet fixed and s
 28. **`ActiveCalls` lazy linger eviction** (Task 1.5 code review): eviction only triggered by `is_active()` / `get_active_target_addons()` calls. T2 queries per log line in practice, so eviction is frequent. Risk only under prolonged quiet periods (no log lines = no eviction = unbounded growth). Negligible in practice.
 
 29. **`ActiveCalls` caller-must-treat-target_addons-as-immutable contract** (Task 1.5 code review): `add_tool(call_id, target_addons)` stores the reference; subsequent caller-side mutation would be visible to later `get_active_target_addons()` calls. Not documented as a contract anywhere. T4 owns construction and treats them as immutable in practice. Forward-looking API hardening opportunity.
+
+30. **`audit_log.write()` does NOT fsync** (Task 2.1 code review, plan-locked): uses `f.flush()` only (userspace buffer flush, no kernel sync). On Shield power-loss, the last writes since natural kernel flush (~30s on ext4) can be lost. Spec §5.3 says "atomic per-line append" — ambiguous whether fsync is required. `state_paths.atomic_write()` DOES fsync, so project standard for "durable write" is fsync. Real forensic-loss tolerance issue. Add fsync (~1ms/write cost) when next iteration on audit hardening lands, OR document non-fsync as acceptable for V1.
+
+31. **No concurrent-write test for `audit_log`** (Task 2.1 code review): audit log is concurrent-critical across T1/T2/T3/T4. Plan-locked test set. Add 2-thread × 100-write test when next iterating on audit module.
+
+32. **`audit_log.write()` re-opens file per call** (Task 2.1 code review, plan-locked): `open("a")` happens inside `_LOCK` every write. High-frequency LLM-streaming events (thousands/session) pay open+flush latency on every entry. Acceptable for V1; reconsider if a perf issue surfaces.
+
+33. **No timestamp format assertion in `test_audit_log.py`** (Task 2.1 code review): only `"ts" in obj` checked. Add regex assertion `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$` to lock the format. Plan-locked test set.
+
+34. **`secrets._load` does not guard against non-dict JSON content** (Task 2.2 code review, plan-locked): a tampered `secrets.json` containing `[1,2,3]` would survive `json.load(f) or {}` and crash on `.get()` in `get_secret`. File is under our control + spec's same-trust model. Forward-looking robustness.
+
+35. **`secrets.json.tmp` briefly at 0644 before chmod** (Task 2.2 code review, plan-locked): brief window between `atomic_write` and `os.chmod` where the `.tmp` is world-readable. Single-user device per spec §5.1.
+
+36. **No runtime guard preventing T2 from importing/reading secrets module** (Task 2.2 code review): docstring says T2 must not read; relies on reviewer discipline. Convention-only.
+
+37. **`secrets.py` missing tests for chmod failure, perm-denied read, persist-failure-cache-consistency invariant, concurrent set_secret** (Task 2.2 code review): plan-locked test set. Add when next iterating on secrets module hardening.
+
+38. **🔧 PLAN DEFECT — Task 2.3 plan line 2131 Telegram replacement** (Task 2.3 spec review): plan has `<redacted-tg-token>` as replacement string, but plan Step 3 test asserts `"<redacted>" in out or "<redacted-token>" in out` — neither matches `<redacted-tg-token>`. Implementer's fix-deviation used `<redacted-token>` to pass tests. **Action: update plan file line 2131** to match shipped code, OR re-examine if intent was to use a more-specific label like `<redacted-tg-token>` and update test accordingly.
+
+39. **🔧 PLAN DEFECT — Task 2.3 plan line 2141 Authorization regex** (Task 2.3 spec review): plan has `(?i)Authorization:\s*\S+` which only consumes the first non-whitespace token after `Authorization:`. With canary input `Authorization: Bearer secret-here-123`, the `\S+` matches only `Bearer`, leaving `secret-here-123` (15 chars, below Bearer's 20-char minimum) un-redacted. Implementer's fix-deviation used `(?i)Authorization:[^\r\n]+` to consume the full header value, which aligns with spec §5.8's `Authorization:.*` intent. **Action: update plan file line 2141** to use the line-terminated form.
+
+40. **Canary input MUST be newline-separated** (Task 2.3 fix): the `Authorization:[^\r\n]+` regex would otherwise greedily consume subsequent canary lines, masking 4 patterns from observation. Future canary maintenance must preserve newlines between segments. The fix commit added an in-function comment to this effect.
+
+41. **Heuristic regex `(?i).*(token|secret|password|api_?key|cookie|auth).*` produces benign false positives** (Task 2.3 code review, plan-locked): matches `author`, `authentic`, `OAuth` as if they were secrets. Allow_list provides escape. Acceptable for V1.
+
+42. **`canary_self_test` over-redacts on single-line Authorization-containing inputs in production** (Task 2.3 forward-looking): if real log lines have content AFTER the Authorization header value on the same line, the `[^\r\n]+` regex over-redacts. Acceptable privacy-safe direction; uncommon in Kodi logs.
+
+43. **`write_tool_call` fabricates `value` field for `get_addon_setting`** (Task 2.4 code review, plan-locked): the helper unconditionally writes `redacted_args["value"] = "<redacted>"` when pair-redacting, even though `get_addon_setting` (read path) doesn't have a `value` arg. Audit record then shows `args.value: <redacted>` and `redacted: [..., "args.value"]` — misleading but inert (no data leak). Plan-locked. Action: at Task 7.5-EXPANDED (kodi_settings), update helper to only redact value if it was supplied: `if "value" in redacted_args: redacted_args["value"] = "<redacted>"; redacted_keys.append("args.value")`.
 
 ---
 
