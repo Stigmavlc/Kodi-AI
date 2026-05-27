@@ -1,0 +1,14 @@
+[
+  "auth_method",
+  "cookie_consent_shown",
+  "cookie_consent_required",
+  "password_min_length",
+  "password_max_length",
+  "password_strength",
+  "api_key_required",
+  "api_url",
+  "auth_url",
+  "token_url",
+  "cookie_url",
+  "secret_url"
+]
