@@ -1,9 +1,9 @@
 # Kodi-AI V1 — Session Handover
 
-**Last updated:** 2026-05-27 (end of session: design + plan + Phase 0 execution)
+**Last updated:** 2026-05-27 (in-session: Phase 1 COMPLETE — all 6 tasks reviewer-vetted)
 **Project root:** `/Users/ivan/Desktop/Web Development  Projects/Completed By Me/Kodi-AI/`
 **Git branch:** `main`
-**Latest commit:** `94e65a9` (test: pytest smoke test + pre-commit hook)
+**Latest commit:** `d7b28fe` (feat(concurrency): ActiveCalls — two-scope bracketing with linger)
 
 This document tracks **exactly what's left to implement**, by phase and by task, so any future session can pick up cleanly. It is read by the `/load-context` slash command at session start and updated by `/save-context` at session end.
 
@@ -51,12 +51,12 @@ Per task, the plan's own task ID maps to a line range in `docs/superpowers/plans
 
 | Task | Status | Notes |
 |---|---|---|
-| 1.1 `lib/state_paths.py` (special:// resolution + atomic write + smoke probe) | ⏸ pending | Spec §1.15, §5.1. **First Phase 1 task to execute.** Creates `tests/integration/fakes/fake_xbmcvfs.py` too. |
-| 1.2 `lib/settings.py` (xbmcaddon wrapper + typed accessors + cache) | ⏸ pending | Spec §2, §5.1, §7.3 |
-| 1.3 `lib/concurrency.py` part 1: AtomicCounter, abort_event, work_queue, payload dataclasses, enqueue helper | ⏸ pending | Spec §1.2, §1.6, §1.7, §1.12 |
-| 1.3b **FairnessTracker** (round-1 plan-review fix C2) | ⏸ pending | Spec §1.12. Apply after 1.3. |
-| 1.4 `MonotonicBudget` + `BudgetStateError` + `BudgetState` | ⏸ pending | Spec §1.8. Append to `lib/concurrency.py`. |
-| 1.5 `ActiveCalls` (multi-target + 'ALL' + linger + `last_window_targets`) | ⏸ pending | Spec §1.2, §1.3, §1.7. `last_window_targets()` is required for Task 4.6-REVISED. |
+| 1.1 `lib/state_paths.py` (special:// resolution + atomic write + smoke probe) | ✅ done | `53d2663`. Spec §1.15, §6.5 (NOT §5.1 — plan defect; see §4#6). Also created `tests/integration/fakes/{__init__,fake_xbmcvfs}.py`, wired `tests/integration/conftest.py`, added empty `tests/__init__.py` + `.` to `pyproject.toml` pythonpath (justified deviations for absolute-import conftest), and added 3-line fixture re-bind for module-level `xbmcvfs` caching (justified). Both reviewers (spec + code-quality) signed CLEAN. |
+| 1.2 `lib/settings.py` (xbmcaddon wrapper + typed accessors + cache) | ✅ done | `8284386`. Spec §2, §5.1, §7.3. Production code plan-verbatim. Test fixture deviation: re-bind `lib.settings.xbmcaddon` per test + swap `_cache` to fresh dict per test (justified — same pattern as Task 1.1 fixture re-bind, extended for module-global `_cache`). Both reviewers (spec + code-quality) signed CLEAN. |
+| 1.3 `lib/concurrency.py` part 1: AtomicCounter, abort_event, work_queue, payload dataclasses, enqueue helper | ✅ done | `2d6b293`. Spec §1.2, §1.6, §1.7, §1.12. Plan-verbatim, ZERO deviations. 18/18 unit tests pass. Both reviewers CLEAN. |
+| 1.3b **FairnessTracker** (round-1 plan-review fix C2) | ✅ done | `c0f2302`. Spec §1.12. Plan-verbatim, ZERO deviations. 23/23 unit tests pass. Both reviewers CLEAN. |
+| 1.4 `MonotonicBudget` + `BudgetStateError` + `BudgetState` | ✅ done | `fde6f79`. Spec §1.8. Appended to `lib/concurrency.py`. Plan-verbatim, ZERO deviations. 30/30 unit tests pass. Both reviewers CLEAN. |
+| 1.5 `ActiveCalls` (multi-target + 'ALL' + linger + `last_window_targets`) | ✅ done | `d7b28fe`. Spec §1.2, §1.3, §1.7. Plan-verbatim, ZERO deviations. 38/38 unit tests pass. Both reviewers CLEAN. ⚠️ `last_window_targets()` NOT in plan code — must be added at Task 4.6-REVISED (see §4 #23). |
 
 ### Phase 2 — Audit log + secrets + redactor (4 tasks)
 
@@ -183,7 +183,55 @@ These are issues caught by reviewers during Phase 0 that are NOT yet fixed and s
 
 4. **`settings.xml` labels not localized** (Task 0.2): English strings hardcoded vs `$LOCALIZE[30001]`. Acceptable for V1 (single locale).
 
-5. **`conftest.py` unused `import sys`** (Task 0.2): placeholder for later fakes registration. Acceptable until Task 1.1 wires fakes.
+5. **`conftest.py` unused `import sys`** (Task 0.2): ✅ resolved at Task 1.1 — integration conftest now wires `sys.modules["xbmcvfs"] = fake_xbmcvfs`.
+
+6. **Plan defect — Task 1.1 spec ref** (caught in Task 1.1 spec review): plan says "Spec ref: §1.15, §2, §5.1 (atomic rename smoke test)" but §5.1 is actually "Secrets storage"; the atomic-rename smoke test lives at spec §6.5. The wrong ref propagated into commit `53d2663`'s message. Documentation-only; fix the plan file when convenient.
+
+7. **Foundation `atomic_write` does not fsync parent directory after `os.replace`** (plan-locked, caught in Task 1.1 code review): `os.replace` is atomic in page cache but the parent directory inode is not durably committed until fsynced. Real power-loss durability gap on Android. Spec amendment likely needed; revisit when Task 9.2 (`lib/health.py`) lands or if a power-loss issue surfaces.
+
+8. **`atomic_write("foo.json", ...)` raises FileNotFoundError** (plan-locked, Task 1.1 code review): `os.makedirs("")` fails when `path` has no directory component. No live callers (all routes through `profile_path/snapshots_path/temp_path` return absolute paths). Plan-locked sharp edge for a foundation module.
+
+9. **`smoke_probe_atomic_rename` `finally` catches only `FileNotFoundError`** (plan-locked, Task 1.1 code review): other `OSError` types (PermissionError, IsADirectoryError) propagate from `os.remove(probe)` and mask try-block exceptions. Robustness gap.
+
+10. **Dead code in `tests/integration/fakes/fake_xbmcvfs.py`** (plan-faithful, Task 1.1 code review): unused `import io`, `import time`, and module-level `_files: Dict[str, bytes] = {}`. Clean up when integration tests start exercising the fake (Phase 11).
+
+11. **`_Stat` class API mismatch in `fake_xbmcvfs.py`** (plan-faithful, Task 1.1 code review): `st_size`/`st_mtime`/`st_ino` defined as methods, but real `os.stat_result` exposes them as attributes. First integration caller will need to adapt (or the fake needs rewriting).
+
+12. **`lib/settings.py` cache poisoning on transient exception** (Task 1.2 code review, plan-locked): `get_string` swallows ALL exceptions and caches `""` permanently until `invalidate_cache()`. A single Android filesystem hiccup at boot could silently mask `openrouter_key` for the entire service lifetime. Real reliability risk on power-cycled Shield. Plan-locked; revisit if a user-visible bug surfaces or as a follow-on hardening pass.
+
+13. **`lib/settings.py` `set_string` not unit-tested** (Task 1.2 code review): only 7 plan-specified tests; `set_string` is the only state-mutating function and is uncovered. When first caller lands (likely Phase 7 tool wrapper for Kodi settings), add a happy-path + exception-propagation test alongside the caller's tests.
+
+14. **Settings cache lifetime = service lifetime** (Task 1.2, plan-locked): `_cache` has no automatic invalidation. Needs wiring into `xbmc.Monitor.onSettingsChanged` — most logically as part of the service.py orchestrator setup (Task 10.2) or `pause_sequence` (Task 5.6). Track during those tasks.
+
+15. **Test fixture re-bind pattern duplicated across `test_state_paths.py` + `test_settings.py`** (Task 1.2 code review): both fixtures have nearly-identical `monkeypatch.setattr(sys.modules["lib.X"], ...)` blocks for module-level `import xbmcXXX` caching. Task 1.3 didn't need this (stdlib-only). Defer to whichever Phase 1+ test next imports an xbmc module — DRY into a `tests/unit/conftest.py` helper at that point.
+
+16. **`test_work_queue_priority_resume_first` leaves residue** (Task 1.3 code review): after the test runs, `work_queue` has one LogIncident remaining (the test `get_nowait()`s only the first item). Currently harmless — no later test in the file uses work_queue. When Task 1.4/1.5 add tests touching `work_queue`, they MUST drain on entry (the existing test's defensive pattern) or this test must clean up.
+
+17. **`field` + `Literal` imports unused in `concurrency.py`** (Task 1.3): plan-verbatim — these imports are in the plan but unused at this snapshot. Will be used by Task 1.4 (MonotonicBudget) and/or Task 1.5 (ActiveCalls) per plan structure. No cleanup needed.
+
+18. **`has_pending_logincident()` + `work_queue.mutex` deadlock risk** (Task 1.3b code review): `queue.PriorityQueue.mutex` is a NON-reentrant `threading.Lock`. If T4 (Task 10.2 wiring) ever calls `has_pending_logincident()` from inside a `with work_queue.mutex:` block, it WILL deadlock. Function docstring does not warn about this. Add caveat at Task 10.2 review time, or strengthen the docstring with a forward-looking comment.
+
+19. **Spec §1.2 line 89 says `_queue[0]` peek but `has_pending_logincident` iterates full heap** (Task 1.3b code review): impl correctly self-corrected because head is always ResumeWork during starvation (else FairnessTracker wouldn't trigger). Spec text could be tightened to match implementation intent ("iterate heap" not "check head"). Documentation-only — fix at next spec revision.
+
+20. **`MonotonicBudget` has no lock** (Task 1.4 code review, plan-locked): per-session use is single-threaded by T4, but if T3's `/status` handler reads `elapsed()` while T4 is mid-transition, a torn read is theoretically possible (GIL-protected in CPython, but not portable). Spec §1.8 has no lock. Revisit at Task 5.2 (reasoner_state.py) when cross-thread access pattern is concretized; add a lock then if `/status` truly reads it.
+
+21. **`MonotonicBudget` unused imports in test file** (Task 1.4): `import time` and `from freezegun import freeze_time` are unused — plan-verbatim. No lint hook configured so won't break CI. Add ruff/flake8 to pre-commit at Phase 12 cleanup to catch systematically.
+
+22. **`MonotonicBudget.to_dict()` silently drops elapsed-since-last-start when called on RUNNING; `from_dict()` with state="RUNNING" yields broken object** (Task 1.4 code review, plan-locked): spec §1.8 says only PAUSED is persisted, so by design — but no defensive raise. If a corrupted disk blob ever has state="RUNNING", `elapsed()` will assertion-crash (loud failure mode, not silent). Acceptable for V1.
+
+23. **`ActiveCalls.last_window_targets()` NOT yet defined** (Task 1.5 — HANDOVER §3 expectation): plan-verbatim Task 1.5 only defines `get_active_target_addons()` (current-time only). HANDOVER §3 row says "`last_window_targets()` is required for Task 4.6-REVISED" but plan didn't include it. **Action: add `last_window_targets()` method to `ActiveCalls` as part of Task 4.6-REVISED execution.** Signature likely: `last_window_targets(self, ts: datetime) -> set[str] | Literal["ALL"]` — returns the union of target_addons for any tool/session active during a buffered log line's timestamp window.
+
+24. **Spec §1.2 line 110 shows `get_active_target_addons_at(self, ts: float)` (timestamp-parameterized)** (Task 1.5 spec review): plan/impl have only `get_active_target_addons()` (current-time only). Spec text and plan/impl diverge. Related to #23 — likely the spec is anticipating the `last_window_targets()` extension. Document-or-implement decision at Task 4.6-REVISED.
+
+25. **PEP 604 inconsistency in `concurrency.py`** (Task 1.5 code review): `_AddonTargets = Union[set[str], Literal["ALL"]]` uses `typing.Union`, but `MonotonicBudget.started_at: float | None` uses PEP 604 `|`. Plan-locked. Style normalization pass at Phase 12 cleanup.
+
+26. **Mid-file imports accumulating in `concurrency.py`** (Task 1.5 code review): `from typing import Union` inside ActiveCalls section, `import time` + `from enum import Enum, auto` inside MonotonicBudget section. PEP 8 prefers top-of-module. Plan-design choice (section-localized appends). Refactor candidate when concurrency.py settles.
+
+27. **Unused `import pytest` in `tests/unit/test_active_calls.py`** (Task 1.5): plan-verbatim. No `pytest.raises` etc. used. Will be caught when ruff/flake8 is added (Phase 12).
+
+28. **`ActiveCalls` lazy linger eviction** (Task 1.5 code review): eviction only triggered by `is_active()` / `get_active_target_addons()` calls. T2 queries per log line in practice, so eviction is frequent. Risk only under prolonged quiet periods (no log lines = no eviction = unbounded growth). Negligible in practice.
+
+29. **`ActiveCalls` caller-must-treat-target_addons-as-immutable contract** (Task 1.5 code review): `add_tool(call_id, target_addons)` stores the reference; subsequent caller-side mutation would be visible to later `get_active_target_addons()` calls. Not documented as a contract anywhere. T4 owns construction and treats them as immutable in practice. Forward-looking API hardening opportunity.
 
 ---
 
