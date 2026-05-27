@@ -18,5 +18,9 @@
     <platform>all</platform>
     <license>MIT</license>
     <news>0.1.0: initial V1 release.</news>
+    <assets>
+      <icon>icon.png</icon>
+      <fanart>fanart.jpg</fanart>
+    </assets>
   </extension>
 </addon>

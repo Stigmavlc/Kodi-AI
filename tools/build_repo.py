@@ -53,8 +53,12 @@ def zip_addon(src_dir: str, dest_zip: str) -> None:
                 z.write(full, rel)
 
 
-def make_repository_addon(out_dir: str, version: str) -> str:
-    """Create a tiny repository addon pointing at REPO_BASE_URL and zip it."""
+def make_repository_addon(out_dir: str, version: str, addon_src: str) -> str:
+    """Create a tiny repository addon pointing at REPO_BASE_URL and zip it.
+
+    Includes icon.png + fanart.jpg copied from the main addon so the
+    "Kodi-AI Repository" entry in Kodi's repo list also has branded art.
+    """
     repo_addon_dir = os.path.join(out_dir, REPO_ID)
     os.makedirs(repo_addon_dir, exist_ok=True)
     addon_xml = (
@@ -70,17 +74,30 @@ def make_repository_addon(out_dir: str, version: str) -> str:
         '    </extension>\n'
         '    <extension point="xbmc.addon.metadata">\n'
         '        <summary lang="en_GB">Kodi-AI Repository</summary>\n'
-        '        <description lang="en_GB">Repository providing the Kodi-AI service addon.</description>\n'
+        '        <description lang="en_GB">Repository providing the Kodi-AI service addon. AI-assisted Kodi diagnostics with Telegram bot integration.</description>\n'
         '        <platform>all</platform>\n'
         '        <license>MIT</license>\n'
+        '        <assets>\n'
+        '            <icon>icon.png</icon>\n'
+        '            <fanart>fanart.jpg</fanart>\n'
+        '        </assets>\n'
         '    </extension>\n'
         '</addon>\n'
     )
     with open(os.path.join(repo_addon_dir, "addon.xml"), "w", encoding="utf-8") as f:
         f.write(addon_xml)
+    # Copy art from the main addon source so the repo addon is branded too.
+    for asset in ("icon.png", "fanart.jpg"):
+        src = os.path.join(addon_src, asset)
+        if os.path.exists(src):
+            shutil.copy2(src, os.path.join(repo_addon_dir, asset))
     out_zip = os.path.join(out_dir, f"{REPO_ID}-{version}.zip")
     with zipfile.ZipFile(out_zip, "w", zipfile.ZIP_DEFLATED) as z:
         z.write(os.path.join(repo_addon_dir, "addon.xml"), f"{REPO_ID}/addon.xml")
+        for asset in ("icon.png", "fanart.jpg"):
+            asset_path = os.path.join(repo_addon_dir, asset)
+            if os.path.exists(asset_path):
+                z.write(asset_path, f"{REPO_ID}/{asset}")
     return out_zip
 
 
@@ -141,7 +158,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Generated repo manifest: {os.path.join(repo_dir, 'addons.xml')}")
 
     # 4. Build the repository addon (so users can one-shot install the repo)
-    repo_zip = make_repository_addon(out_dir, version)
+    repo_zip = make_repository_addon(out_dir, version, addon_src)
     print(f"Built repository addon: {repo_zip}")
 
     # 5. Apache-style directory listing for /repo/ so Kodi's HTTPDirectory
