@@ -4,6 +4,75 @@ All notable changes to Kodi-AI are documented here. The project follows
 [Semantic Versioning](https://semver.org/) (with V1 being a personal-use
 release).
 
+## [0.3.0] — 2026-05-27
+
+Complete setup-UX rewrite. The phone-driven WindowXMLDialog + local HTTP
+server from v0.2.x had fatal browser-compat issues (Brave's HTTPS-Only
+mode, Firefox-Android cert warnings that can't be bypassed, mDNS blocked
+in privacy-hardened browsers). v0.3.0 replaces it entirely.
+
+### Changed
+
+- **Inline-settings setup.** All configuration lives in Kodi's standard
+  Configure dialog (gear icon → Settings - Kodi-AI). The Telegram tab is
+  now the primary setup area with inline step-by-step instructions:
+  step 1 (paste bot token from @BotFather), step 2 (send the displayed
+  `/start <secret>` command in Telegram), step 3 (the bot DMs you for
+  the OpenRouter key + agent mode). A "Tip" section recommends Kore /
+  Yatse remote-paste apps to avoid TV keyboard typing.
+- **Bot-driven DM setup.** After pairing, the bot asks for the OpenRouter
+  API key via DM, validates it via a 1-token ping, then asks for agent
+  mode via inline buttons (Auto / Manual). The user's key message is
+  deleted immediately after validation so the plaintext key doesn't
+  linger in chat history.
+- **On-demand T3 startup.** The Telegram long-poll thread now starts
+  the moment a valid `bot_token` is typed into Configure, rather than
+  only at boot. `BotHolder` (lib/bot_holder.py) owns the mutable bot
+  reference.
+- **`KodiAiMonitor`** subclass of xbmc.Monitor relays `onSettingsChanged`
+  to T4 as a `SettingsChanged` work item, which triggers bot-token
+  validation + T3 startup + status_display refresh.
+- **`bot_token` security hardening.** After validation, the token is
+  copied to `secrets.json` and the plaintext Kodi-settings copy is
+  cleared (avoids leaking via backups/snapshots of settings XML).
+- **default.py simplified.** Old `setup_via_phone`, `setup_wizard`,
+  `show_secret` actions removed. Only `show_status_panel` + `reset_bot`
+  remain.
+
+### Removed
+
+- `lib/setup_server.py` (local HTTPS server).
+- `lib/setup_window.py` (WindowXMLDialog).
+- `lib/setup_ip.py` (LAN-IP probe).
+- `resources/skins/Default/720p/Setup.xml`.
+- `resources/web/setup.html`.
+- `resources/media/setup_bg.png`, `btn_focus.png`, `btn_nofocus.png`,
+  `step_pending.png`, `step_done.png`.
+- The phone-pairing wizard's auto-launch in default.py.
+
+### Migration from v0.2.x
+
+If you previously had a working v0.2.x install:
+
+- Your `secrets.json` (bot_token + openrouter_key) is unchanged. The
+  service continues to use them.
+- If your `bot_token` was still in Kodi's settings.xml (e.g. unusual
+  install path), the service auto-migrates it to `secrets.json` on the
+  first boot of 0.3.0 and clears the plaintext copy.
+- Re-pairing is NOT required if `chat_allowlist.json` already exists.
+- The new Configure dialog's Telegram tab will show "✓ Active —
+  monitoring Kodi logs" if everything carries over.
+
+### Added (tests + infra)
+
+- `lib/setup_monitor.KodiAiMonitor` — xbmc.Monitor subclass.
+- `lib/bot_holder.BotHolder` — on-demand T3 thread management.
+- `lib/concurrency.SettingsChanged` — new work-queue item type.
+- `lib/telegram/setup_dm_state` — schema-versioned per-chat DM state.
+- `lib/telegram/setup_callbacks` — DM handlers for OR key + mode.
+- 36 new unit tests across setup_monitor, settings_changed_handler,
+  setup_dm_state, telegram_dm_setup. Total suite: 327 → 363 → final.
+
 ## [0.1.0] — 2026-05-27
 
 Initial V1 release. Targeting Kodi 21 (Omega) on Nvidia Shield Pro / Android TV.

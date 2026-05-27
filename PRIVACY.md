@@ -40,10 +40,33 @@ Redaction is unit-tested in `tests/unit/test_redactor.py` and
 
 ### To Telegram
 
-- Plain natural-language messages, inline buttons, and (during pairing) a
-  QR image. The Telegram Bot API stores messages on Telegram's servers per
-  their [Privacy Policy](https://telegram.org/privacy). Only the bot owner
+- Plain natural-language messages and inline buttons. The Telegram Bot
+  API stores messages on Telegram's servers per their
+  [Privacy Policy](https://telegram.org/privacy). Only the bot owner
   (you) can see these messages.
+
+### Telegram DM exposure during setup (v0.3.0)
+
+The v0.3.0 inline-settings setup pivot sends the OpenRouter API key
+through a Telegram DM during the initial pairing flow (the user pastes
+`sk-or-...` to the bot after `/start`). This trades one risk for another:
+
+- **Mitigation 1.** Immediately after validating the key, the bot calls
+  the Telegram `deleteMessage` API to scrub the user's message
+  containing the plaintext key. This is best-effort — Telegram may
+  retain a copy on their servers for some period.
+- **Mitigation 2.** The bot never echoes the key back in any reply or
+  log line.
+- **Residual risk.** Telegram's server-side message history. If your
+  Telegram account is compromised, an attacker with retroactive access
+  to your chat history could in principle recover the key.
+- **User control.** You can rotate your OpenRouter key any time at
+  <https://openrouter.ai/keys> — old keys are revocable independently
+  of the Telegram chat.
+
+If you would rather not transmit the key through Telegram, you can set
+it directly in `secrets.json` (under the Kodi addon userdata directory)
+and skip the DM step. See [SECURITY.md](SECURITY.md).
 
 ---
 

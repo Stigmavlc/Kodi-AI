@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
-"""Generate branded icon + fanart + setup-flow assets for Kodi-AI.
+"""Generate branded icon + fanart for Kodi-AI.
+
+v0.3.0: setup-flow asset generators (setup_bg, btn_focus, btn_nofocus,
+step_pending, step_done) removed — the inline-settings setup flow uses
+only Kodi's standard skin chrome, no custom WindowXMLDialog assets.
 
 Outputs (deterministic, regenerated from this script):
 - service.kodi.ai/icon.png                              (256x256)
 - service.kodi.ai/fanart.jpg                            (1920x1080)
-- service.kodi.ai/resources/media/setup_bg.png          (1280x720 — dialog background)
-- service.kodi.ai/resources/media/btn_focus.png         (40x40 — button focus)
-- service.kodi.ai/resources/media/btn_nofocus.png       (40x40 — button unfocused)
-- service.kodi.ai/resources/media/step_pending.png      (32x32 — pending step glyph)
-- service.kodi.ai/resources/media/step_done.png         (32x32 — done step glyph)
 
 Run after editing the design:
     python tools/build_assets.py
@@ -223,87 +222,16 @@ def make_fanart(path: str, w: int = 1920, h: int = 1080) -> None:
     bg.convert("RGB").save(path, "JPEG", quality=88, optimize=True)
 
 
-def make_setup_bg(path: str, w: int = 1280, h: int = 720) -> None:
-    """Setup dialog backdrop. Soft cyan gradient + faint circuit overlay.
-    1280x720 — Kodi's standard skin canvas. PNG, RGB."""
-    bg = _gradient_bg(w, h, BG_TOP, BG_MID, BG_BOTTOM)
-    overlay = _circuit_overlay(w, h, density=0.0015)
-    overlay = overlay.filter(ImageFilter.GaussianBlur(1.5))
-    bg = Image.alpha_composite(bg.convert("RGBA"), overlay)
-    # Faint vignette to focus the eye toward center.
-    vignette = Image.new("L", (w, h), 0)
-    vd = ImageDraw.Draw(vignette)
-    cx, cy = w // 2, h // 2
-    for r in range(0, max(w, h), 8):
-        alpha = int(min(255, r * 0.35))
-        vd.ellipse((cx - r, cy - r, cx + r, cy + r), outline=alpha)
-    vignette = vignette.filter(ImageFilter.GaussianBlur(60))
-    overlay_v = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    overlay_v.putalpha(vignette)
-    bg = Image.alpha_composite(bg, overlay_v)
-    bg.convert("RGB").save(path, "PNG", optimize=True)
-
-
-def _rounded_rect_png(path: str, w: int, h: int, fill, outline=None, radius: int = 8) -> None:
-    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    d.rounded_rectangle((1, 1, w - 2, h - 2), radius=radius, fill=fill, outline=outline,
-                        width=2 if outline else 0)
-    img.save(path, "PNG", optimize=True)
-
-
-def make_btn_focus(path: str) -> None:
-    """40x40 cyan-tinted rounded rect for focused buttons."""
-    _rounded_rect_png(
-        path, 40, 40,
-        fill=(0, 212, 255, 90),
-        outline=(0, 212, 255, 255),
-        radius=10,
-    )
-
-
-def make_btn_nofocus(path: str) -> None:
-    """40x40 transparent button background (no-focus state)."""
-    img = Image.new("RGBA", (40, 40), (0, 0, 0, 0))
-    img.save(path, "PNG", optimize=True)
-
-
-def make_step_pending(path: str) -> None:
-    """32x32 hollow gray circle — 'step not yet complete' glyph."""
-    img = Image.new("RGBA", (32, 32), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    d.ellipse((4, 4, 28, 28), outline=(127, 179, 213, 200), width=2)
-    img.save(path, "PNG", optimize=True)
-
-
-def make_step_done(path: str) -> None:
-    """32x32 cyan-filled circle with a white check — 'step complete'."""
-    img = Image.new("RGBA", (32, 32), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    d.ellipse((2, 2, 30, 30), fill=(0, 212, 255, 255), outline=(0, 212, 255, 255))
-    # Check mark — 3-point polyline.
-    d.line([(9, 17), (14, 22), (24, 10)], fill=(255, 255, 255, 255), width=3)
-    img.save(path, "PNG", optimize=True)
-
-
 def main():
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     addon_dir = os.path.join(here, "service.kodi.ai")
-    media_dir = os.path.join(addon_dir, "resources", "media")
     os.makedirs(addon_dir, exist_ok=True)
-    os.makedirs(media_dir, exist_ok=True)
     icon_path = os.path.join(addon_dir, "icon.png")
     fanart_path = os.path.join(addon_dir, "fanart.jpg")
     print(f"Generating {icon_path}...")
     make_icon(icon_path)
     print(f"Generating {fanart_path}...")
     make_fanart(fanart_path)
-    print(f"Generating setup assets in {media_dir}...")
-    make_setup_bg(os.path.join(media_dir, "setup_bg.png"))
-    make_btn_focus(os.path.join(media_dir, "btn_focus.png"))
-    make_btn_nofocus(os.path.join(media_dir, "btn_nofocus.png"))
-    make_step_pending(os.path.join(media_dir, "step_pending.png"))
-    make_step_done(os.path.join(media_dir, "step_done.png"))
     print("Done.")
 
 

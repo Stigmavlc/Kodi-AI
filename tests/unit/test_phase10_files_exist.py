@@ -12,9 +12,11 @@ def test_default_py_exists():
     assert os.path.exists(p), "service.kodi.ai/default.py must exist"
     with open(p, encoding="utf-8") as f:
         content = f.read()
-    assert "setup_wizard" in content
-    assert "show_secret" in content
+    # v0.3.0: setup_wizard + show_secret removed; setup lives inline in
+    # Configure → Telegram and the bot DM flow handles the rest. default.py
+    # now only exposes the status panel + reset_bot action.
     assert "show_status_panel" in content
+    assert "reset_bot" in content
 
 
 def test_service_py_exists():

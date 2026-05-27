@@ -1,20 +1,23 @@
 """Kodi-AI UI entry point. Invoked via RunScript(default.py [, action]).
 
-Actions:
-  (none)            → status panel with action menu
-  setup_via_phone   → phone-driven setup (QR + local HTTP server)  ← preferred
-  setup_wizard      → fallback 4-step TV-keyboard setup
-  show_secret       → QR PNG + setup_secret display
-  reset_bot         → confirm + clear allowlist + generate new secret
+v0.3.0 settings-inline setup pivot:
+  All configuration lives inline in Kodi's standard Configure dialog
+  (settings.xml). default.py is now used only for two actions invoked
+  from settings.xml or the addon's Program-add-ons launch:
 
-Spec: §1.14, §5.2, §7.3. Kodi-native UI only (Dialog().textviewer/select/
-input/yesno/ok/notification). Estuary-skin-friendly [COLOR]/[B]/[I] tokens.
+    (none)        → status panel with action menu
+    reset_bot     → confirm + clear allowlist + generate new setup_secret
+
+The old phone-driven setup wizard (setup_via_phone, setup_wizard) and the
+QR-based show_secret screen are gone in v0.3.0 because the same content
+is exposed inline in the Configure dialog (pairing_command label) and the
+bot DM flow handles OpenRouter key + mode selection.
+
+Spec: §1.14, §5.2, §7.3 + v0.3.0 settings-inline setup pivot.
 """
 from __future__ import annotations
 import os
-import secrets as secrets_lib
 import sys
-import threading
 import time
 
 _here = os.path.dirname(os.path.abspath(__file__))
@@ -26,13 +29,11 @@ import xbmcaddon
 import xbmcgui
 import xbmcvfs  # noqa: F401 (used transitively via lib.state_paths)
 
-from lib import state_paths, settings, secrets, qr
+from lib import state_paths, settings, secrets
 from lib.telegram import auth as tg_auth
-from lib.llm import client as llm_client
 
 
 ADDON_ID = "service.kodi.ai"
-_addon_path = xbmcaddon.Addon(ADDON_ID).getAddonInfo("path")
 
 
 ADDON_NAME = "Kodi-AI"
@@ -57,13 +58,6 @@ def _h2(text: str) -> str:
 
 def _dim(text: str) -> str:
     return f"[COLOR {COLOR_DIM}]{text}[/COLOR]"
-
-
-def _step(n: int, total: int, title: str) -> str:
-    return (
-        f"[COLOR {COLOR_DIM}]STEP {n} of {total}[/COLOR]"
-        f"   {_h1(title)}\n{_HR}"
-    )
 
 
 def _safe_health_state() -> dict:
@@ -94,7 +88,7 @@ def show_status_panel() -> None:
     if not bot_token:
         lines.append(
             f"  {_BULLET} [COLOR {COLOR_WARN}]Not configured[/COLOR]   "
-            f"{_dim('— run Setup Wizard to begin')}"
+            f"{_dim('— open Configure to set up')}"
         )
     elif not allowlist:
         lines.append(
@@ -111,7 +105,7 @@ def show_status_panel() -> None:
             f"{_dim('Paired users:')} [B]{len(allowlist)}[/B]"
         )
     username = settings.get_string("bot_username") or ""
-    if username:
+    if username and not username.startswith("("):
         lines.append(
             f"  {_BULLET} {_dim('Bot:')} [B]@{username}[/B]"
         )
@@ -156,25 +150,30 @@ def show_status_panel() -> None:
     lines.append("")
     lines.append(_HR)
     lines.append(
-        _dim("Use the action menu below to configure or inspect this add-on.")
+        _dim("All setup lives in Configure → Telegram. Reset Bot Owner is "
+             "available there for re-pairing.")
     )
 
     msg = "\n".join(lines)
     xbmcgui.Dialog().textviewer(f"{ADDON_NAME}  ·  Status", msg)
 
     actions = [
-        "Setup Wizard" if not bot_token else "Re-run Setup Wizard",
-        "Show Setup QR / Secret",
+        "Open Configure (Settings)",
         "Reset Bot Owner",
         "View Audit Log",
         "Close",
     ]
     choice = xbmcgui.Dialog().select(f"{ADDON_NAME}  ·  Actions", actions)
     if choice == 0:
-        setup_wizard()
+        # Open the addon settings dialog. This is the v0.3.0 setup entry point.
+        try:
+            xbmcaddon.Addon(ADDON_ID).openSettings()
+        except Exception:
+            xbmcgui.Dialog().ok(
+                ADDON_NAME,
+                "Open Add-ons → Kodi-AI → Configure to set up.",
+            )
     elif choice == 1:
-        show_secret()
-    elif choice == 2:
         if xbmcgui.Dialog().yesno(
             "Reset Bot Owner",
             "Clear all authorized users and generate a new setup secret?\n\n"
@@ -183,11 +182,13 @@ def show_status_panel() -> None:
             new_secret = tg_auth.reset_bot_owner()
             xbmcgui.Dialog().ok(
                 "Bot Owner Reset",
-                f"New setup_secret:\n\n[COLOR {COLOR_ACCENT}][B]{new_secret}[/B][/COLOR]",
+                f"New setup_secret:\n\n"
+                f"[COLOR {COLOR_ACCENT}][B]{new_secret}[/B][/COLOR]\n\n"
+                f"Open Configure to see the pairing command.",
             )
-    elif choice == 3:
+    elif choice == 2:
         view_audit()
-    # choice == 4 (Close) or -1 (cancelled): no-op
+    # choice == 3 (Close) or -1 (cancelled): no-op
 
 
 def view_audit() -> None:
@@ -208,409 +209,38 @@ def view_audit() -> None:
         xbmcgui.Dialog().ok("Audit Log Error", str(e))
 
 
-def show_secret() -> None:
-    """Generate / display QR image + setup_secret + deeplink."""
-    bot_token = secrets.get_secret("bot_token") or ""
-    if not bot_token:
-        xbmcgui.Dialog().ok(ADDON_NAME, "No bot configured. Run Setup Wizard first.")
-        return
-    setup_secret = tg_auth.current_setup_secret() or tg_auth.generate_setup_secret()
-    bot_username = settings.get_string("bot_username") or ""
-    if bot_username:
-        deeplink = f"https://t.me/{bot_username}?start={setup_secret}"
-    else:
-        deeplink = f"(bot username unknown — DM your bot: /start {setup_secret})"
-
-    qr_dir = state_paths.profile_path(".qr")
-    try:
-        os.makedirs(qr_dir, exist_ok=True)
-    except OSError:
-        pass
-    qr_path = os.path.join(qr_dir, "setup.png")
-    qr_written = False
-    try:
-        png = qr.qr_png(deeplink, module_pixel_size=10, ecc_level="H")
-        with open(qr_path, "wb") as f:
-            f.write(png)
-        qr_written = True
-    except Exception as e:
-        xbmcgui.Dialog().ok(
-            ADDON_NAME,
-            f"QR generation failed: {e}\n\n"
-            f"Setup link:\n[COLOR {COLOR_ACCENT}]{deeplink}[/COLOR]\n\n"
-            f"Setup secret: [B]{setup_secret}[/B]",
-        )
-        return
-    msg = (
-        f"{_h1('Pair your phone')}\n"
-        f"{_dim('Scan the QR with your phone, or send /start to your bot')}\n"
-        f"{_HR}\n\n"
-        f"{_h2('Deeplink:')}\n"
-        f"[COLOR {COLOR_ACCENT}]{deeplink}[/COLOR]\n\n"
-        f"{_h2('Or manually in your bot chat:')}\n"
-        f"[B][COLOR {COLOR_ACCENT}]/start {setup_secret}[/COLOR][/B]\n\n"
-        f"{_dim('QR image saved to:')}\n{qr_path}"
-    )
-    xbmcgui.Dialog().ok(f"{ADDON_NAME}  ·  Pair", msg)
-    if qr_written:
-        try:
-            os.remove(qr_path)
-        except OSError:
-            pass
-
-
-def setup_wizard() -> None:
-    """4-step guided setup: OpenRouter key → Telegram bot → pair → mode."""
-    d = xbmcgui.Dialog()
-    TITLE = f"{ADDON_NAME}  ·  Setup"
-
-    # Welcome — one brief screen, then straight into Step 1.
-    if not d.yesno(
-        TITLE,
-        f"{_h1('Set up Kodi-AI')}\n"
-        f"{_dim('4 quick steps. ~2 minutes.')}\n{_HR}\n\n"
-        f"   {_BULLET} OpenRouter API key  {_dim('(AI access)')}\n"
-        f"   {_BULLET} Telegram bot        {_dim('(notifications)')}\n"
-        f"   {_BULLET} Pair your phone\n"
-        f"   {_BULLET} Pick agent mode\n",
-        yeslabel="Begin",
-        nolabel="Cancel",
+def reset_bot() -> None:
+    """Confirm + clear allowlist + generate a new setup secret. Wired from
+    settings.xml (Configure → Telegram → Reset bot owner)."""
+    if xbmcgui.Dialog().yesno(
+        "Reset Bot Owner",
+        "Clear allowlist + generate a new setup secret?\n\nThis cannot be undone.",
     ):
-        return
-
-    # ──────────────────────────────────────────────────────────────────
-    # STEP 1 — OpenRouter (single screen, then input)
-    # ──────────────────────────────────────────────────────────────────
-    d.ok(
-        TITLE,
-        f"{_step(1, 4, 'OpenRouter API Key')}\n\n"
-        f"OpenRouter is a single gateway to GPT / Claude / Gemini.\n"
-        f"Typical cost: [B]$1–5/month[/B] for normal use.\n\n"
-        f"{_h2('On your phone:')}\n"
-        f"   {_BULLET} Open [B]openrouter.ai[/B] → Sign in\n"
-        f"   {_BULLET} Profile → [B]Credits[/B] → add [B]$5[/B]\n"
-        f"   {_BULLET} Profile → [B]Keys[/B] → [B]Create Key[/B] → copy it\n\n"
-        f"{_dim('Press OK to paste it.')}",
-    )
-    current_key = secrets.get_secret("openrouter_key") or ""
-    new_key = d.input(
-        "OpenRouter API Key  (sk-or-...)",
-        defaultt=current_key,
-        type=xbmcgui.INPUT_ALPHANUM,
-    )
-    if not new_key:
-        d.ok(TITLE, f"{_dim('Setup cancelled — no API key entered.')}")
-        return
-    secrets.set_secret("openrouter_key", new_key)
-    d.notification(ADDON_NAME, "Testing OpenRouter key...", time=2000)
-    try:
-        llm_client.chat(
-            api_key=new_key,
-            model="google/gemini-2.0-flash-001",
-            messages=[{"role": "user", "content": "ping"}],
-            max_tokens=5,
-        )
-        d.notification(
-            ADDON_NAME, f"[COLOR {COLOR_OK}]✓ OpenRouter key valid[/COLOR]",
-            time=2000,
-        )
-    except llm_client.LLMAuthError:
-        d.ok(
-            TITLE,
-            f"[COLOR {COLOR_ERROR}][B]Invalid API key.[/B][/COLOR]\n\n"
-            f"Get a new one at [B]openrouter.ai/keys[/B] and re-run the wizard.",
-        )
-        return
-    except llm_client.LLMNoCreditError:
-        d.ok(
-            TITLE,
-            f"[COLOR {COLOR_WARN}][B]No credit on your OpenRouter account.[/B][/COLOR]\n\n"
-            f"Add credit at [B]openrouter.ai/credits[/B] and re-run the wizard.",
-        )
-        return
-    except Exception as e:
-        if not d.yesno(
-            TITLE,
-            f"[COLOR {COLOR_WARN}]Preflight error:[/COLOR] {e}\n\n"
-            f"{_dim('Continue anyway? Setup can finish offline; the key will be retested at runtime.')}",
-            yeslabel="Continue",
-            nolabel="Cancel",
-        ):
-            return
-
-    # ──────────────────────────────────────────────────────────────────
-    # STEP 2 — Telegram bot (single screen, then input)
-    # ──────────────────────────────────────────────────────────────────
-    d.ok(
-        TITLE,
-        f"{_step(2, 4, 'Telegram Bot')}\n\n"
-        f"You'll create [B]your own[/B] Telegram bot — Kodi-AI talks through it.\n\n"
-        f"{_h2('In Telegram, message [B]@BotFather[/B]:')}\n"
-        f"   {_BULLET} Send [B]/newbot[/B] → pick a name + username (must end in [B]bot[/B])\n"
-        f"   {_BULLET} Copy the [B]token[/B] BotFather sends back ([I]digits:letters[/I])\n"
-        f"   {_BULLET} Send [B]/setprivacy[/B] → pick your bot → [B]Disable[/B] {_dim('(REQUIRED)')}\n\n"
-        f"{_dim('No Telegram? Install it free from your app store first.')}\n"
-        f"{_dim('Press OK to paste the token.')}",
-    )
-    bot_token = d.input(
-        "Telegram bot_token  (paste from BotFather)",
-        defaultt=secrets.get_secret("bot_token") or "",
-        type=xbmcgui.INPUT_ALPHANUM,
-    )
-    if not bot_token:
-        d.ok(TITLE, f"{_dim('Setup cancelled — no bot token entered.')}")
-        return
-    secrets.set_secret("bot_token", bot_token)
-    d.notification(ADDON_NAME, "Validating bot...", time=2000)
-    try:
-        from lib.telegram.bot import TelegramBot
-        bot = TelegramBot(bot_token)
-        me = bot.get_me()
-        if not me.get("ok"):
-            d.ok(
-                TITLE,
-                f"[COLOR {COLOR_ERROR}][B]Bot token invalid.[/B][/COLOR]\n\n"
-                f"{_dim(str(me))}\n\n"
-                f"Re-run the wizard with a fresh token from BotFather.",
-            )
-            return
-        username = me.get("result", {}).get("username", "")
-        settings.set_string("bot_username", username)
-        d.notification(
-            ADDON_NAME,
-            f"[COLOR {COLOR_OK}]✓ @{username} verified[/COLOR]",
-            time=2500,
-        )
-    except Exception as e:
-        d.ok(
-            TITLE,
-            f"[COLOR {COLOR_ERROR}][B]Bot validation failed.[/B][/COLOR]\n\n{e}",
-        )
-        return
-
-    # ──────────────────────────────────────────────────────────────────
-    # STEP 3 — Pair
-    # ──────────────────────────────────────────────────────────────────
-    tg_auth.generate_setup_secret()  # ensure secret exists; show_secret() reads it
-    show_secret()  # displays QR + deeplink + /start command in one screen
-    setup_secret = tg_auth.current_setup_secret() or ""
-    if d.yesno(
-        TITLE,
-        f"{_step(3, 4, 'Pair your phone')}\n\n"
-        f"Have you sent [B]/start {setup_secret}[/B] to your bot?\n\n"
-        f"{_dim('Yes → wait up to 60s for pairing.  Skip → pair later from the menu.')}",
-        yeslabel="I have sent it",
-        nolabel="Skip for now",
-    ):
-        d.notification(ADDON_NAME, "Waiting for pairing...", time=2000)
-        paired = False
-        for _ in range(60):
-            if tg_auth.chat_allowlist():
-                paired = True
-                break
-            time.sleep(1)
-        if paired:
-            d.notification(
-                ADDON_NAME,
-                f"[COLOR {COLOR_OK}]✓ Paired successfully[/COLOR]",
-                time=2500,
-            )
-        else:
-            d.ok(
-                TITLE,
-                f"[COLOR {COLOR_WARN}][B]Pair timeout.[/B][/COLOR]\n\n"
-                f"No incoming /start within 60s.\n\n"
-                f"{_dim('You can pair later from the main menu: ')}"
-                f"[B]Show Setup QR / Secret[/B]",
-            )
-
-    # ──────────────────────────────────────────────────────────────────
-    # STEP 4 — Mode (single select, no intro screen)
-    # ──────────────────────────────────────────────────────────────────
-    mode_choice = d.select(
-        f"Step 4 of 4  —  How should the agent apply fixes?",
-        [
-            "Auto      —  apply safe fixes automatically  (recommended)",
-            "Manual    —  ask via Telegram before every fix",
-        ],
-    )
-    if mode_choice == 0:
-        settings.set_string("mode", "auto")
-    elif mode_choice == 1:
-        settings.set_string("mode", "manual")
-
-    # ──────────────────────────────────────────────────────────────────
-    # STEP 5 — Done
-    # ──────────────────────────────────────────────────────────────────
-    paired_ok = bool(tg_auth.chat_allowlist())
-    pair_status = (
-        f"[COLOR {COLOR_OK}]paired[/COLOR]"
-        if paired_ok
-        else f"[COLOR {COLOR_WARN}]not paired[/COLOR]"
-    )
-    d.ok(
-        TITLE,
-        f"[COLOR {COLOR_OK}][B]✓ Setup complete[/B][/COLOR]\n{_HR}\n\n"
-        f"   {_BULLET} OpenRouter:  [COLOR {COLOR_OK}]configured[/COLOR]\n"
-        f"   {_BULLET} Telegram:    [B]@{settings.get_string('bot_username') or '?'}[/B]   {pair_status}\n"
-        f"   {_BULLET} Mode:        [B]{settings.get_string('mode') or 'auto'}[/B]\n\n"
-        f"{_dim('Restart Kodi to start the service now, or it will start on next launch.')}",
-    )
-
-
-def setup_via_phone() -> None:
-    """Phone-driven setup: TV shows QR + status, phone does all input.
-
-    Architecture:
-      1. Detect LAN IP (xbmc.getIPAddress → UDP-connect fallback).
-      2. Reserve a port (8088..8099 preferred, else OS-assigned).
-      3. Generate a 128-bit session token.
-      4. Render the setup URL as a QR PNG → write to .qr/ in profile.
-      5. Start the local HTTP server.
-      6. Open the SetupWindow (modal); its polling thread mirrors progress.
-      7. After dialog dismisses (auto-close on pair, or user Cancel),
-         shut down the server + clean up the QR file.
-    """
-    from lib import setup_ip, setup_server, setup_window  # lazy import
-
-    lan_ip = setup_ip._get_lan_ip()
-    if not lan_ip:
-        xbmcgui.Dialog().ok(
-            "Kodi-AI Setup",
-            "Could not detect your LAN IP.\n\n"
-            "Make sure your Shield is on WiFi or Ethernet, then "
-            "use [B]Manual setup (TV keyboard)[/B] from settings.",
-        )
-        return
-
-    # Reserve the port AND hand the bound socket to the HTTP server.
-    # H5: previously we close()d the bind socket then constructed the
-    # HTTPServer (which re-binds the same port via SO_REUSEADDR). Between
-    # the close and the re-bind, a different LAN process could grab the
-    # port. Pass the bound socket through so the server adopts it directly.
-    bound_sock, port = setup_server._bind_port()
-
-    session_token = secrets_lib.token_urlsafe(16)
-    url = f"http://{lan_ip}:{port}/setup?token={session_token}"
-
-    # Render QR + write to profile/.qr/ — atomic + sweep stale (>1h old) files.
-    qr_dir = state_paths.profile_path(".qr")
-    try:
-        os.makedirs(qr_dir, exist_ok=True)
-    except OSError:
-        pass
-    now = time.time()
-    try:
-        for fn in os.listdir(qr_dir):
-            if fn.startswith("kodi-ai-qr-") and fn.endswith(".png"):
-                fp = os.path.join(qr_dir, fn)
-                try:
-                    if now - os.path.getmtime(fp) > 3600:
-                        os.remove(fp)
-                except OSError:
-                    pass
-    except OSError:
-        pass
-    qr_path = os.path.join(qr_dir, f"kodi-ai-qr-{session_token[:8]}.png")
-    try:
-        png = qr.qr_png(url, module_pixel_size=10, ecc_level="M")
-        state_paths.atomic_write(qr_path, png)
-    except Exception as e:
-        # We never started the server; close the placeholder socket so
-        # we don't leak the port reservation.
+        new_secret = tg_auth.reset_bot_owner()
+        # Also refresh the pairing_command label so the user sees the new
+        # secret in Configure right away.
         try:
-            bound_sock.close()
+            username = settings.get_string("bot_username", "") or ""
+            if username and not username.startswith("("):
+                settings.set_string(
+                    "pairing_command",
+                    f"/start {new_secret} to @{username}",
+                )
+            else:
+                settings.set_string("pairing_command", f"/start {new_secret}")
         except Exception:
             pass
         xbmcgui.Dialog().ok(
-            "Kodi-AI Setup",
-            f"Could not generate QR code: {e}\n\n"
-            "Use [B]Manual setup (TV keyboard)[/B] from settings.",
-        )
-        return
-
-    server = setup_server.SetupHTTPServer(
-        ("0.0.0.0", port),
-        setup_server.SetupHandler,
-        session_token=session_token,
-        lan_ip=lan_ip,
-        port=port,
-        bound_socket=bound_sock,
-    )
-    server_thread = threading.Thread(
-        target=server.serve_forever, daemon=True, name="kodi-ai-setup-http",
-    )
-    server_thread.start()
-    poll_thread = None
-    try:
-        window = setup_window.SetupWindow(
-            "Setup.xml", _addon_path, "Default", "720p",
-            qr_path=qr_path,
-            url=url,
-            session_token=session_token,
-            lan_ip=lan_ip,
-            port=port,
-        )
-        window.doModal()
-        # H1: capture the poll thread reference BEFORE deleting the window
-        # so we can join it after the dialog tears down. The polling
-        # thread's setLabel calls on a torn-down native window can segfault;
-        # joining ensures it has exited before we drop the Python wrapper.
-        poll_thread = getattr(window, "_poll_thread", None)
-        # Make sure the polling thread sees the close signal even if the
-        # dialog dismissed via a Kodi-internal path that didn't trigger
-        # our close() override.
-        try:
-            window._closing.set()
-        except Exception:
-            pass
-        del window  # break the reference so Kodi releases the native window
-    finally:
-        # H1: drain the polling thread BEFORE shutting down the server.
-        # HTTP_TIMEOUT_SECONDS (2s) per request + jitter -> 4s is safe.
-        if poll_thread is not None:
-            try:
-                poll_thread.join(timeout=4)
-            except Exception:
-                pass
-        try:
-            server.shutdown()
-        except Exception:
-            pass
-        server_thread.join(timeout=3)
-        try:
-            server.server_close()
-        except Exception:
-            pass
-        try:
-            os.remove(qr_path)
-        except OSError:
-            pass
-
-    if secrets.get_secret("openrouter_key") and secrets.get_secret("bot_token"):
-        xbmcgui.Dialog().notification(
-            ADDON_NAME, "Setup complete", time=3000,
+            "Reset",
+            f"New secret: [COLOR {COLOR_ACCENT}][B]{new_secret}[/B][/COLOR]\n\n"
+            f"Configure → Telegram now shows the new pairing command.",
         )
 
 
 def main() -> None:
     action = sys.argv[1] if len(sys.argv) > 1 else ""
-    if action == "setup_via_phone":
-        setup_via_phone()
-    elif action == "setup_wizard":
-        setup_wizard()
-    elif action == "show_secret":
-        show_secret()
-    elif action == "reset_bot":
-        if xbmcgui.Dialog().yesno(
-            "Reset Bot Owner",
-            "Clear allowlist + generate a new setup secret?\n\nThis cannot be undone.",
-        ):
-            new_secret = tg_auth.reset_bot_owner()
-            xbmcgui.Dialog().ok(
-                "Reset",
-                f"New secret: [COLOR {COLOR_ACCENT}][B]{new_secret}[/B][/COLOR]",
-            )
+    if action == "reset_bot":
+        reset_bot()
     else:
         show_status_panel()
 

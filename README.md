@@ -47,22 +47,36 @@ python tools/build_repo.py
 
 ## First-run setup
 
-After install, launch the add-on once (**Add-ons → Program add-ons →
-Kodi-AI**) to open the **setup wizard**:
+All setup happens inside Kodi's standard Configure dialog. No web pages,
+no QR codes, no popup windows.
 
-1. **Telegram bot token** — paste a token from [@BotFather](https://t.me/BotFather).
-2. **OpenRouter API key** — get one at <https://openrouter.ai/>.
-3. **Pair your Telegram account** — the add-on prints a QR code and a `/start
-   <code>` URL. Open it on your phone, send the code to the bot, you become
-   the **bot owner**. Only the owner can issue commands or receive
-   notifications.
-4. **Mode** — pick `auto`, `ask`, or `dry-run`:
-   - `auto`: apply fixes silently, notify on outcome.
-   - `ask`: every fix requires a Telegram confirmation.
-   - `dry-run`: never apply, only report what would be done.
-5. **Budget caps** — daily USD limit for OpenRouter spend (default $0.50/day).
+1. **Open Configure.** In Kodi: **Add-ons → Services → Kodi-AI →
+   Configure** (or hit the gear icon on the addon tile).
+2. **Telegram tab — Step 1: create your bot.** In Telegram, message
+   [@BotFather](https://t.me/BotFather), send `/newbot`, follow the
+   prompts, and copy the token. Paste the token into the **Bot token**
+   field in Configure.
+   - **Tip:** install [Kore](https://kodi.tv/article/kore-official-remote-android-now-available/)
+     (Android) or Yatse (iOS), enable **Kodi → Settings → Services →
+     Control → Allow remote control via HTTP**, and pair the remote.
+     You can then paste from your phone into Configure fields instead
+     of typing on a TV keyboard. See [docs/REMOTE-PASTE.md](docs/REMOTE-PASTE.md).
+3. **Step 2: pair your phone.** As soon as the token validates, the
+   **Pairing command** field in Configure shows
+   `/start <secret> to @<your-bot>`. Send that exact text to your bot in
+   Telegram.
+4. **Step 3: finish in Telegram.** Your bot will DM you and ask for the
+   OpenRouter API key (sk-or-...). Paste it. Then it asks for the agent
+   mode (Auto recommended, or Manual). Tap one. Done.
 
-Settings are also editable later at **Add-ons → Kodi-AI → Configure**.
+Get an OpenRouter key at <https://openrouter.ai/keys> — $5 of credit is
+typically more than enough for a month of light use.
+
+After setup, the **Status** label in Configure → Telegram updates to
+**✓ Active — monitoring Kodi logs**. You're done.
+
+Settings (budget caps, redaction allowlist, etc.) live in the same
+Configure dialog under their own tabs.
 
 ---
 
