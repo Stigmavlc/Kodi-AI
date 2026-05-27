@@ -121,3 +121,110 @@ def chat(
         tool_calls=msg.get("tool_calls"),
         raw=body,
     )
+
+
+# ---- Streaming with chunk-level abort + slug validation ----
+from typing import Generator, Iterable
+import threading
+
+
+def chat_stream(
+    *,
+    api_key: str,
+    model: str,
+    messages: list[dict],
+    abort_event: threading.Event,
+    tools: list[dict] | None = None,
+    max_tokens: int = 4096,
+    temperature: float = 0.2,
+    timeout: tuple[float, float] = (5.0, 30.0),
+) -> Generator[tuple[str | None, str | None, dict | None], None, None]:
+    """Stream chat completion. Yields (chunk_text, finish_reason, usage).
+
+    finish_reason and usage are None until the terminal chunk.
+    Caller MUST check abort_event between iterations; this generator
+    cleanly closes the socket on next iteration after abort_event is set.
+
+    Spec: §1.10.
+    """
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "stream": True,
+    }
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
+
+    r = requests.post(
+        f"{BASE_URL}/chat/completions",
+        headers=_build_headers(api_key),
+        json=payload,
+        timeout=timeout,
+        stream=True,
+    )
+
+    if r.status_code == 401: raise LLMAuthError(r.text)
+    if r.status_code == 402: raise LLMNoCreditError(r.text)
+    if r.status_code in (404, 422): raise LLMModelUnavailableError(r.text)
+    if r.status_code == 429: raise LLMRateLimitError(r.headers.get("Retry-After", "1"))
+    if r.status_code >= 500: raise LLMServerError(f"{r.status_code}: {r.text[:200]}")
+    if r.status_code != 200: raise LLMError(f"{r.status_code}: {r.text[:200]}")
+
+    try:
+        for raw_line in r.iter_lines(decode_unicode=True):
+            if abort_event.is_set():
+                # Spec §1.10: r.raw.close() THEN r.close() for clean socket FIN
+                try:
+                    r.raw.close()
+                except Exception:
+                    pass
+                r.close()
+                return
+            if not raw_line or not raw_line.startswith("data:"):
+                continue
+            data = raw_line[len("data:"):].strip()
+            if data == "[DONE]":
+                return
+            try:
+                obj = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            choice = obj.get("choices", [{}])[0]
+            delta = choice.get("delta", {})
+            chunk = delta.get("content") or ""
+            finish = choice.get("finish_reason")
+            usage = obj.get("usage")
+            if chunk or finish or usage:
+                yield chunk if chunk else None, finish, usage
+    finally:
+        try: r.raw.close()
+        except Exception: pass
+        r.close()
+
+
+def validate_slugs(
+    *,
+    api_key: str,
+    expected: Iterable[str],
+    timeout: float = 10.0,
+) -> tuple[set[str], set[str]]:
+    """Ping OpenRouter /api/v1/models. Returns (available, missing).
+    On unreachable, available=set() and missing=set(expected) so caller
+    can warn but proceed.
+    """
+    expected_set = set(expected)
+    try:
+        r = requests.get(
+            f"{BASE_URL}/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=timeout,
+        )
+        r.raise_for_status()
+        ids = {m["id"] for m in r.json().get("data", []) if "id" in m}
+    except Exception:
+        return set(), expected_set
+    available = expected_set & ids
+    return available, expected_set - available
