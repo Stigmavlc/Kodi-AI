@@ -7,16 +7,23 @@
     types — keeps this dialog compatible with non-Estuary skins.
   - All textures resolved via special://home/addons/service.kodi.ai/...,
     NEVER skin-relative texture names (which break on non-Estuary skins).
-  - Default focus: 9101 (URL label — focusable and benign). NOT the Cancel
-    button — that would let an idle OK-press dismiss the dialog.
+  - Default focus: 9099 (hidden no-op button — focusable and harmless).
+    Pre-fix this used to be 9101 (URL label), which is NOT focusable, so
+    Kodi fell back to the first focusable control = 9200 (Cancel), which
+    meant an idle OK-press immediately dismissed the dialog (B3).
   - QR image (9100) uses aspectratio=keep so non-720p skins don't squash it.
+  - Step icons were removed (B4): previous incarnation used non-integer
+    IDs like "9110_icon", which Kodi atoi-truncates to 9110 — colliding
+    with the label IDs and producing undefined rendering. Visual progress
+    is now signalled exclusively by the label colour change + "(done)"
+    suffix, applied by setup_window._apply_state.
 
   Coordinate system: 1280x720 canvas.
 
   Spec: phone-driven setup, §1.14 (revised).
 -->
 <window>
-  <defaultcontrol always="true">9101</defaultcontrol>
+  <defaultcontrol always="true">9099</defaultcontrol>
   <onload></onload>
   <controls>
 
@@ -28,6 +35,19 @@
       <height>720</height>
       <texture>special://home/addons/service.kodi.ai/resources/media/setup_bg.png</texture>
       <aspectratio>scale</aspectratio>
+    </control>
+
+    <!-- Hidden no-op focusable target. Sole purpose: serve as <defaultcontrol>
+         so an idle OK-press lands here (not on Cancel). 1x1 + invisible so
+         it's not visually present. (B3) -->
+    <control type="button" id="9099">
+      <left>0</left>
+      <top>0</top>
+      <width>1</width>
+      <height>1</height>
+      <visible>false</visible>
+      <label></label>
+      <onclick>noop</onclick>
     </control>
 
     <!-- Title -->
@@ -87,19 +107,11 @@
       <label>PROGRESS</label>
     </control>
 
-    <!-- Step 1 icon + label -->
-    <control type="image" id="9110_icon">
-      <left>660</left>
-      <top>200</top>
-      <width>32</width>
-      <height>32</height>
-      <texture>special://home/addons/service.kodi.ai/resources/media/step_pending.png</texture>
-      <aspectratio>keep</aspectratio>
-    </control>
+    <!-- Step 1 label. Icons removed; colour + "(done)" suffix signal state. -->
     <control type="label" id="9110">
-      <left>704</left>
+      <left>660</left>
       <top>198</top>
-      <width>480</width>
+      <width>540</width>
       <height>36</height>
       <textcolor>FFF0F8FF</textcolor>
       <font>font13</font>
@@ -107,18 +119,10 @@
     </control>
 
     <!-- Step 2 -->
-    <control type="image" id="9111_icon">
-      <left>660</left>
-      <top>250</top>
-      <width>32</width>
-      <height>32</height>
-      <texture>special://home/addons/service.kodi.ai/resources/media/step_pending.png</texture>
-      <aspectratio>keep</aspectratio>
-    </control>
     <control type="label" id="9111">
-      <left>704</left>
+      <left>660</left>
       <top>248</top>
-      <width>480</width>
+      <width>540</width>
       <height>36</height>
       <textcolor>FFF0F8FF</textcolor>
       <font>font13</font>
@@ -126,18 +130,10 @@
     </control>
 
     <!-- Step 3 -->
-    <control type="image" id="9112_icon">
-      <left>660</left>
-      <top>300</top>
-      <width>32</width>
-      <height>32</height>
-      <texture>special://home/addons/service.kodi.ai/resources/media/step_pending.png</texture>
-      <aspectratio>keep</aspectratio>
-    </control>
     <control type="label" id="9112">
-      <left>704</left>
+      <left>660</left>
       <top>298</top>
-      <width>480</width>
+      <width>540</width>
       <height>36</height>
       <textcolor>FFF0F8FF</textcolor>
       <font>font13</font>
@@ -145,18 +141,10 @@
     </control>
 
     <!-- Step 4 -->
-    <control type="image" id="9113_icon">
-      <left>660</left>
-      <top>350</top>
-      <width>32</width>
-      <height>32</height>
-      <texture>special://home/addons/service.kodi.ai/resources/media/step_pending.png</texture>
-      <aspectratio>keep</aspectratio>
-    </control>
     <control type="label" id="9113">
-      <left>704</left>
+      <left>660</left>
       <top>348</top>
-      <width>480</width>
+      <width>540</width>
       <height>36</height>
       <textcolor>FFF0F8FF</textcolor>
       <font>font13</font>

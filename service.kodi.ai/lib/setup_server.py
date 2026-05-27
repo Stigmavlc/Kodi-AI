@@ -12,16 +12,20 @@ Security:
 - Every request requires a `token` query param matching the session token
   (compared via `secrets.compare_digest`).
 - Bad-token requests are throttled with `time.sleep(0.5)` and counted; after
-  100 cumulative bad tokens, an internal `should_die` flag is set, which
-  the outer `setup_via_phone()` polls.
+  100 cumulative bad tokens, an internal `should_die` flag is set. The flag
+  is exposed via `GET /api/status` so the TV-side polling thread can detect
+  it and close the dialog (which drives outer-loop server shutdown).
 - `Host:` header is validated against `<lan_ip>:<port>`, `127.0.0.1:<port>`,
   `localhost:<port>`, or the bare-IP forms without port.
 - `/setup` HTML response sets a strict Content-Security-Policy. All
   responses set `Cache-Control: no-store, no-cache, must-revalidate`.
+- All validation/network error strings written to the audit log are passed
+  through `redactor.redact()` because `repr(exception)` can include
+  authentication URLs (e.g. SSLError URL contains the Telegram bot_token).
 
 Endpoints (all token-gated):
 - GET  /setup                     → mobile setup HTML
-- GET  /api/status                → step state
+- GET  /api/status                → step state + should_die flag
 - POST /api/validate-openrouter   → preflight OpenRouter API key
 - POST /api/validate-telegram     → validate Telegram bot_token via getMe
 - POST /api/save-config           → persist secrets + settings, return deeplink
@@ -42,6 +46,8 @@ from urllib.parse import urlparse, parse_qs
 
 import requests
 
+from . import redactor
+
 ADDON_ID = "service.kodi.ai"
 
 # Port preference: try this range in order, then fall back to OS-assigned.
@@ -58,10 +64,11 @@ TELEGRAM_VALIDATE_TIMEOUT_SECONDS = 10
 def _bind_port() -> Tuple[socket.socket, int]:
     """Try ports 8088..8099 in order, fall back to OS-assigned port=0.
 
-    Returns the OPEN socket + port. The caller must `.close()` the socket
-    before instantiating ThreadingHTTPServer (which re-binds the same port
-    with SO_REUSEADDR). This pattern is used to atomically reserve a port
-    without race-conditioning against other addons / processes.
+    Returns the OPEN socket + port. The caller MUST pass this socket to
+    `SetupHTTPServer(..., bound_socket=s)` rather than closing it and
+    re-binding — closing + re-binding leaves a race window where another
+    LAN process using SO_REUSEADDR could grab the same port between our
+    close() and the HTTP server's bind().
     """
     for p in PORT_RANGE:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -86,6 +93,10 @@ class SetupHTTPServer(ThreadingHTTPServer):
     All session state lives on the server instance so handlers can read /
     mutate it via `self.server.<attr>`. Use the `_state_lock` for cross-
     thread coordination (the polling thread reads `step_state`).
+
+    If `bound_socket` is provided, we adopt the already-bound socket
+    instead of binding a new one — avoids the close-then-rebind race
+    where another LAN process could grab the port in between (see H5).
     """
 
     daemon_threads = True
@@ -100,8 +111,32 @@ class SetupHTTPServer(ThreadingHTTPServer):
         session_token: str,
         lan_ip: str,
         port: int,
+        bound_socket: Optional[socket.socket] = None,
     ):
-        super().__init__(server_address, RequestHandlerClass)
+        if bound_socket is not None:
+            # Adopt the externally-bound socket. Skip super().server_bind()
+            # by passing bind_and_activate=False, then plug our socket in
+            # and call server_activate() to put it in listening state.
+            super().__init__(
+                server_address, RequestHandlerClass, bind_and_activate=False,
+            )
+            # Close the placeholder socket the base class may have created
+            # via socketserver.__init__ (it doesn't bind, but we still want
+            # to replace the fd).
+            try:
+                self.socket.close()
+            except Exception:
+                pass
+            self.socket = bound_socket
+            # Refresh server_address from the actually-bound socket so
+            # the bound port is reflected.
+            try:
+                self.server_address = self.socket.getsockname()
+            except Exception:
+                pass
+            self.server_activate()
+        else:
+            super().__init__(server_address, RequestHandlerClass)
         self.session_token = session_token
         self.lan_ip = lan_ip
         self.port = port
@@ -279,18 +314,29 @@ class SetupHandler(BaseHTTPRequestHandler):
         has_openrouter = bool(secrets_lib.get_secret("openrouter_key"))
         has_bot = bool(secrets_lib.get_secret("bot_token"))
         bot_username = settings.get_string("bot_username") or ""
+        # JSON-encode bot_username so the JS literal is well-formed even
+        # for unexpected/hostile usernames (defence in depth; Telegram
+        # validates the format but we never want template injection here).
+        bot_username_js = json.dumps(bot_username)
         out = (tpl
                .replace("{{LAN_IP}}", self.server.lan_ip)
                .replace("{{PORT}}", str(self.server.port))
                .replace("{{TOKEN}}", self.server.session_token)
                .replace("{{HAS_OPENROUTER}}", "true" if has_openrouter else "false")
                .replace("{{HAS_BOT}}", "true" if has_bot else "false")
+               .replace("{{BOT_USERNAME_JS}}", bot_username_js)
                .replace("{{BOT_USERNAME}}", bot_username))
         self._send_html(200, out)
 
     def _handle_get_status(self) -> None:
         with self.server._state_lock:
-            self._send_json(200, dict(self.server.step_state))
+            payload = dict(self.server.step_state)
+            # Surface the rate-limit self-shutdown flag so the TV polling
+            # thread can close the dialog (which drives server.shutdown()
+            # via setup_via_phone's finally block). Spec §5.2 rate-limit
+            # defense (B1).
+            payload["should_die"] = bool(self.server.should_die)
+        self._send_json(200, payload)
 
     def _handle_validate_openrouter(self, body: dict) -> None:
         from .llm import client as llm_client
@@ -318,9 +364,13 @@ class SetupHandler(BaseHTTPRequestHandler):
         except llm_client.LLMServerError:
             err = "Could not reach OpenRouter"
         except llm_client.LLMError as e:
-            err = f"Validation failed: {e!r}"
+            # repr(e) can leak the bot_token / API key via the URL embedded
+            # in network errors (e.g. SSLError("... url: .../{api_key} ...")).
+            # audit_log.write does NOT auto-redact (only write_tool_call
+            # does), so we redact here before composing the message (B2).
+            err = redactor.redact(f"Validation failed: {e!r}")
         except Exception as e:  # network / unexpected
-            err = f"Validation failed: {e!r}"
+            err = redactor.redact(f"Validation failed: {e!r}")
         audit_log.write("setup_validate_openrouter",
                         details={"ok": ok, "error": err})
         if ok:
@@ -360,7 +410,11 @@ class SetupHandler(BaseHTTPRequestHandler):
         except requests.exceptions.ConnectionError:
             err = "Could not reach Telegram"
         except Exception as e:
-            err = f"Validation failed: {e!r}"
+            # repr(e) on SSLError / HTTPError / JSONDecodeError can include
+            # the request URL, which contains `bot{TOKEN}` for Telegram.
+            # audit_log.write does NOT auto-redact (only write_tool_call
+            # does), so we redact here before composing the message (B2).
+            err = redactor.redact(f"Validation failed: {e!r}")
         audit_log.write("setup_validate_telegram",
                         details={"ok": ok, "username": username, "error": err})
         if ok:
@@ -388,7 +442,13 @@ class SetupHandler(BaseHTTPRequestHandler):
             settings.set_string("bot_username", bot_username)
         if mode in ("auto", "manual"):
             settings.set_string("mode", mode)
-        setup_secret = tg_auth.generate_setup_secret()
+        # Reuse an existing secret if one is in flight (e.g. double-tap on
+        # "Save & continue" or a browser refresh). Rotating it on every
+        # save invalidates any /start <secret> already sent to the bot (H3).
+        setup_secret = (
+            tg_auth.current_setup_secret()
+            or tg_auth.generate_setup_secret()
+        )
         effective_username = bot_username or settings.get_string("bot_username") or ""
         deeplink = (
             f"https://t.me/{effective_username}?start={setup_secret}"

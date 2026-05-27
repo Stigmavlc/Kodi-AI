@@ -59,22 +59,42 @@ def test_all_texture_paths_exist():
 
 
 def test_all_control_ids_unique():
+    """Every <control id="..."> must be unique, INCLUDING non-integer IDs.
+
+    B4: Kodi's atoi() truncates non-integer IDs (e.g. "9110_icon" -> 9110)
+    which collides with `<control id="9110">`. The previous version of this
+    test skipped non-integer IDs and would have missed exactly that bug.
+    """
     tree = ET.parse(SETUP_XML)
     root = tree.getroot()
     seen = set()
     duplicates = []
+    atoi_collisions = []
     for el in root.iter("control"):
         cid = el.get("id")
         if not cid:
             continue
-        # Only check integer IDs — non-integer IDs (e.g. "9110_icon") are
-        # legal in skin XML but not addressable from Python.
-        if not re.fullmatch(r"\d+", cid):
-            continue
         if cid in seen:
             duplicates.append(cid)
         seen.add(cid)
+        # Catch atoi() truncation collisions: e.g. "9110_icon" -> "9110".
+        m = re.match(r"^(\d+)", cid)
+        if m:
+            int_prefix = m.group(1)
+            # Two controls with the same integer prefix are a Kodi
+            # rendering hazard.
+            atoi_collisions.append((cid, int_prefix))
     assert not duplicates, f"Duplicate control IDs: {duplicates}"
+
+    # Check that no two controls share an atoi() prefix.
+    by_prefix: dict = {}
+    for cid, prefix in atoi_collisions:
+        by_prefix.setdefault(prefix, []).append(cid)
+    collisions = {p: ids for p, ids in by_prefix.items() if len(ids) > 1}
+    assert not collisions, (
+        f"Control IDs that atoi-collide (Kodi will undefined-render): "
+        f"{collisions}"
+    )
 
 
 def test_default_focus_is_not_cancel_button():
@@ -86,6 +106,33 @@ def test_default_focus_is_not_cancel_button():
     assert default is not None, "Setup.xml has no <defaultcontrol> — UX risk"
     default_id = (default.text or "").strip()
     assert default_id != "9200", "Default focus must NOT be the Cancel button"
+
+
+def test_default_focus_is_focusable():
+    """B3: defaultcontrol must point at a *focusable* control. Labels are
+    not focusable in Kodi -- if defaultcontrol references a label, Kodi
+    falls back to the first focusable control (which in this XML is the
+    Cancel button 9200) and an idle OK-press dismisses the dialog."""
+    tree = ET.parse(SETUP_XML)
+    root = tree.getroot()
+    default = root.find("defaultcontrol")
+    assert default is not None
+    default_id = (default.text or "").strip()
+    focusable_types = {"button", "togglebutton", "radiobutton", "list",
+                       "fixedlist", "wraplist", "panel", "edit"}
+    matched = None
+    for el in root.iter("control"):
+        if el.get("id") == default_id:
+            matched = el
+            break
+    assert matched is not None, (
+        f"defaultcontrol references id={default_id} but no <control id={default_id}> exists"
+    )
+    ctype = (matched.get("type") or "").strip()
+    assert ctype in focusable_types, (
+        f"defaultcontrol id={default_id} is type={ctype!r} which is not focusable in Kodi; "
+        f"Kodi will fall back to the first focusable control (likely Cancel)."
+    )
 
 
 def test_qr_image_uses_keep_aspectratio():

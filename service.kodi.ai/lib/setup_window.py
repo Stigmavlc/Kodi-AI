@@ -4,13 +4,17 @@ The window:
 - Renders the pre-generated QR PNG (caller passes `qr_path`).
 - Shows the LAN URL ("http://192.168.1.42:8088/setup?token=...").
 - Polls `http://127.0.0.1:<port>/api/status` on a daemon thread, updating
-  the 4 step icons + labels as the phone progresses.
-- Auto-closes after pairing succeeds (step=4 + paired=True).
+  the 4 step labels as the phone progresses.
+- Auto-closes after pairing succeeds (step=4 + paired=True) OR when the
+  server signals should_die (rate-limit hard limit hit, B1).
 
 Thread safety:
-- `xbmcgui.Control.setImage()` / `setLabel()` are documented as safe to call
-  from Python threads in Kodi 21 Omega. We call them directly from the
-  polling thread; no main-thread bridge needed.
+- `xbmcgui.Control.setLabel()` is documented as safe to call from Python
+  threads in Kodi 21 Omega. We call it directly from the polling thread.
+- BUT window lifecycle methods (close()) are MAIN-THREAD-ONLY (H2). The
+  polling thread MUST NOT call self.close() directly. Instead it sets
+  _closing and uses xbmc.executebuiltin("Dialog.Close(id)") which Kodi
+  dispatches onto its main thread.
 
 Spec: §1.14 (revised) phone-driven setup.
 """
@@ -27,7 +31,6 @@ import xbmcgui  # type: ignore
 ID_QR_IMAGE = 9100
 ID_URL_LABEL = 9101
 ID_STEP_LABELS = (9110, 9111, 9112, 9113)
-ID_STEP_ICONS = (9111, 9112, 9113, 9114)  # NOTE: see _step_icon_id below
 ID_CANCEL_BTN = 9200
 
 # Match Kodi's standard action IDs without depending on xbmcgui constants
@@ -35,9 +38,6 @@ ID_CANCEL_BTN = 9200
 ACTION_NAV_BACK = 92
 ACTION_PREVIOUS_MENU = 10
 ACTION_CLOSE_DIALOG = 51
-
-STEP_PENDING_TEX = "special://home/addons/service.kodi.ai/resources/media/step_pending.png"
-STEP_DONE_TEX = "special://home/addons/service.kodi.ai/resources/media/step_done.png"
 
 POLL_INTERVAL_SECONDS = 0.75
 HTTP_TIMEOUT_SECONDS = 2.0
@@ -56,31 +56,6 @@ STEP_LABELS_DONE = (
     "3. Telegram bot configured",
     "4. Pairing complete",
 )
-
-
-def _step_icon_id(label_id: int) -> int:
-    """Resolve the icon control sibling for a step label.
-
-    Setup.xml uses string ids like `9110_icon`. Kodi only supports integer
-    control IDs, so we cannot getControl(label_id+"_icon"). Instead, we
-    derive the icon control's ID from the label ID by convention. The XML
-    pairs them at consecutive coordinates; we look them up via the same
-    integer prefix.
-
-    NOTE: in the current Setup.xml the icon controls are referenced in the
-    XML using id="9110_icon" etc. — Kodi rejects non-integer IDs. Therefore
-    the icon controls in Setup.xml don't have integer IDs we can fetch.
-    We use a side-channel: the polling thread instead toggles label PREFIX
-    via setLabel() (e.g. prefix "(o) " for pending and "(*) " for done).
-    The visual progression is provided primarily by colour change + label
-    text — the icon image is decorative.
-
-    This function is retained for forward compatibility if we later assign
-    integer IDs to the icon controls.
-    """
-    raise NotImplementedError(
-        "Icon control IDs are not addressable in current Setup.xml — see docstring."
-    )
 
 
 class SetupWindow(xbmcgui.WindowXMLDialog):
@@ -136,22 +111,47 @@ class SetupWindow(xbmcgui.WindowXMLDialog):
     def onAction(self, action) -> None:  # noqa: N802 — Kodi API
         aid = getattr(action, "getId", lambda: -1)()
         if aid in (ACTION_NAV_BACK, ACTION_PREVIOUS_MENU, ACTION_CLOSE_DIALOG):
+            # onAction fires on the main thread -> safe to call close()
+            # directly here.
             self._closing.set()
             self.close()
 
     def onClick(self, control_id: int) -> None:  # noqa: N802 — Kodi API
         if control_id == ID_CANCEL_BTN:
+            # onClick fires on the main thread -> safe to close() directly.
             self._closing.set()
             self.close()
 
     def close(self) -> None:
-        # Signal the polling thread to stop before delegating to the base
-        # close (which tears down the native window).
+        # Signal the polling thread to stop BEFORE delegating to the base
+        # close (which tears down the native window). H1: set the flag
+        # first so any in-flight poll iteration that's about to call
+        # getControl().setLabel() sees it and bails out early.
         self._closing.set()
         try:
             super().close()
         except Exception:
             pass
+
+    def _request_close_from_background(self) -> None:
+        """Schedule the dialog close from a background thread.
+
+        Kodi window lifecycle is main-thread only -- calling self.close()
+        from the polling thread risks a segfault. Use Kodi's built-in
+        Dialog.Close() which dispatches onto the main thread. (H2)
+        """
+        # Mark closing first to short-circuit re-entry from any further
+        # poll iterations.
+        self._closing.set()
+        try:
+            window_id = self.getWindowId()
+        except Exception:
+            window_id = None
+        if window_id:
+            try:
+                xbmc.executebuiltin(f"Dialog.Close({window_id})")
+            except Exception:
+                pass
 
     # ---- polling -------------------------------------------------------
     def _start_polling(self) -> None:
@@ -175,17 +175,19 @@ class SetupWindow(xbmcgui.WindowXMLDialog):
             except Exception:
                 # Server may be mid-shutdown or just-restarted. Retry next tick.
                 continue
+            # B1: server-side rate-limit shutdown signal. Server has decided
+            # it must die; close the dialog so setup_via_phone's finally
+            # block can drive a clean shutdown.
+            if data.get("should_die"):
+                self._request_close_from_background()
+                return
             self._apply_state(data)
             if data.get("step") == 4 and data.get("paired"):
                 # Successful pairing. Hold the "all done" frame briefly for
-                # readability, then close.
+                # readability, then close (via main-thread dispatch -- H2).
                 if monitor.waitForAbort(AUTOCLOSE_DELAY_SECONDS):
                     break
-                self._closing.set()
-                try:
-                    self.close()
-                except Exception:
-                    pass
+                self._request_close_from_background()
                 return
 
     def _apply_state(self, state: dict) -> None:

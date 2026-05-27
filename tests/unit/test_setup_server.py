@@ -237,6 +237,118 @@ def test_100_bad_tokens_triggers_shutdown_flag(server, monkeypatch):
     assert server.bad_token_count == 100
 
 
+def test_100_bad_tokens_triggers_actual_shutdown_via_status_endpoint(server, monkeypatch):
+    """B1: after 100 bad tokens the should_die flag must be observable
+    via /api/status so the TV-side polling thread can react to it."""
+    from lib import setup_server
+    monkeypatch.setattr(setup_server, "BAD_TOKEN_THROTTLE_SECONDS", 0.0)
+
+    # Baseline: should_die is False.
+    status, _h, body = _request(
+        server, "GET", f"/api/status?token={server.session_token}"
+    )
+    assert status == 200
+    data = json.loads(body)
+    assert data.get("should_die") is False
+
+    # Trip the rate limit.
+    for _ in range(100):
+        _request(server, "GET", "/setup?token=BAD")
+
+    # Now /api/status must surface the flag.
+    status, _h, body = _request(
+        server, "GET", f"/api/status?token={server.session_token}"
+    )
+    assert status == 200
+    data = json.loads(body)
+    assert data.get("should_die") is True
+
+
+# ---------------------------------------------------------------------------
+# B2 — redactor.redact() on validation errors so audit log never leaks tokens
+# ---------------------------------------------------------------------------
+def test_validate_telegram_audit_redacts_token_on_ssl_error(server, monkeypatch):
+    """B2: validation errors that don't match the dedicated Timeout/
+    ConnectionError branches fall into the catch-all `except Exception`.
+    Without redaction, repr(e) leaks the bot_token via the embedded URL
+    (e.g. HTTPError, JSONDecodeError). Use a Telegram-shaped token that
+    matches the redactor pattern (8-12 digits : 30+ chars) so we exercise
+    the redaction itself rather than relying on incidental coverage from
+    other branches.
+
+    The test name retains 'ssl_error' for traceability with the review
+    finding's wording, but the exception is HTTPError because SSLError
+    is actually a ConnectionError subclass and never reaches the
+    catch-all branch.
+    """
+    import requests as requests_mod
+    from lib import setup_server, audit_log, state_paths
+
+    # Format MUST match the Telegram-token redactor pattern:
+    #   \b\d{8,12}:[A-Za-z0-9_-]{30,}\b
+    secret_token = "1234567890:VERY-SECRET-TG-TOKEN-ABCDEFGHIJKLMNOP"
+    fake_url = (
+        f"https://api.telegram.org/bot{secret_token}/getMe"
+    )
+
+    def _raise(url, timeout):
+        # HTTPError repr embeds the request URL (in real requests usage
+        # the URL contains the path with `bot{TOKEN}`). Use this rather
+        # than SSLError, which would be caught by the dedicated
+        # ConnectionError branch (and never reaches the catch-all where
+        # repr(e) is composed).
+        raise requests_mod.exceptions.HTTPError(
+            f"500 Server Error for url: {fake_url}"
+        )
+
+    monkeypatch.setattr(setup_server.requests, "get", _raise)
+
+    _request(
+        server, "POST",
+        f"/api/validate-telegram?token={server.session_token}",
+        body=json.dumps({"bot_token": secret_token}),
+    )
+    audit_log.write("flush_marker", details={})
+    audit = state_paths.profile_path("audit/audit.jsonl")
+    with open(audit, "r", encoding="utf-8") as f:
+        content = f.read()
+    assert secret_token not in content, (
+        "Bot token leaked into audit log via repr(HTTPError) -- "
+        "redactor.redact() must be applied to validation errors."
+    )
+
+
+def test_validate_openrouter_audit_redacts_key_on_error(server, monkeypatch):
+    """Same protection on the OpenRouter side: an LLMError whose repr
+    contains the API key must not survive into the audit log."""
+    from lib import setup_server, audit_log, state_paths
+    from lib.llm import client as llm_client
+
+    secret_key = "sk-or-VERY-LEAKY-12345abcdefghijklmnopqrstuvwx"
+
+    def _raise(**kw):
+        # LLMError is the project's catch-all; the message embeds the key
+        # similar to how requests.exceptions does for URLs.
+        raise llm_client.LLMError(
+            f"upstream returned 500 for key={secret_key}"
+        )
+    monkeypatch.setattr(llm_client, "chat", _raise)
+
+    _request(
+        server, "POST",
+        f"/api/validate-openrouter?token={server.session_token}",
+        body=json.dumps({"api_key": secret_key}),
+    )
+    audit_log.write("flush_marker", details={})
+    audit = state_paths.profile_path("audit/audit.jsonl")
+    with open(audit, "r", encoding="utf-8") as f:
+        content = f.read()
+    assert secret_key not in content, (
+        "OpenRouter key leaked into audit log via repr(LLMError) -- "
+        "redactor.redact() must be applied to validation errors."
+    )
+
+
 # ---------------------------------------------------------------------------
 # /api/status
 # ---------------------------------------------------------------------------
@@ -249,6 +361,9 @@ def test_api_status_returns_initial_state(server):
         "openrouter_ok": False,
         "telegram_ok": False,
         "paired": False,
+        # B1: rate-limit self-shutdown flag, observable to the TV polling
+        # thread so it can close the dialog when the server decides to die.
+        "should_die": False,
     }
 
 
@@ -420,6 +535,60 @@ def test_save_config_persists_secrets_and_returns_deeplink(server, monkeypatch):
     secrets_lib.set_secret.assert_any_call("bot_token", "222:newtoken")
     settings.set_string.assert_any_call("bot_username", "my_kodi_bot")
     settings.set_string.assert_any_call("mode", "auto")
+
+
+def test_save_config_reuses_existing_setup_secret(server, monkeypatch):
+    """H3: a second save-config call must return the SAME setup_secret as
+    the first. Rotating the secret invalidates any /start <secret> already
+    sent to the bot in flight (e.g. user double-taps "Save & continue")."""
+    from lib import secrets as secrets_lib, settings
+    from lib.telegram import auth as tg_auth
+
+    # In-memory stand-ins so current_setup_secret() can observe what
+    # generate_setup_secret() wrote.
+    secret_box: dict = {}
+    monkeypatch.setattr(secrets_lib, "set_secret",
+                        lambda k, v: secret_box.update({k: v}))
+    monkeypatch.setattr(secrets_lib, "get_secret",
+                        lambda k: secret_box.get(k))
+    monkeypatch.setattr(settings, "set_string", mock.MagicMock())
+
+    # Patch tg_auth.* to use the in-memory store consistently (they
+    # were imported into setup_server's local namespace at module load).
+    monkeypatch.setattr(tg_auth, "current_setup_secret",
+                        lambda: secret_box.get("setup_secret"))
+
+    def _gen():
+        import secrets as _stdlib_secrets
+        s = _stdlib_secrets.token_urlsafe(8)
+        secret_box["setup_secret"] = s
+        return s
+    monkeypatch.setattr(tg_auth, "generate_setup_secret", _gen)
+
+    # Two identical save-config calls.
+    payload = json.dumps({
+        "openrouter_key": "sk-or-newkey",
+        "bot_token": "222:newtoken",
+        "bot_username": "my_kodi_bot",
+        "mode": "auto",
+    })
+    _s, _h, body1 = _request(
+        server, "POST",
+        f"/api/save-config?token={server.session_token}",
+        body=payload,
+    )
+    _s, _h, body2 = _request(
+        server, "POST",
+        f"/api/save-config?token={server.session_token}",
+        body=payload,
+    )
+    data1 = json.loads(body1)
+    data2 = json.loads(body2)
+    assert data1["ok"] and data2["ok"]
+    assert data1["setup_secret"] == data2["setup_secret"], (
+        "setup_secret must be stable across repeated save-config calls"
+    )
+    assert data1["deeplink"] == data2["deeplink"]
 
 
 def test_save_config_omits_empty_fields(server, monkeypatch):

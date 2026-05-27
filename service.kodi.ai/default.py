@@ -483,9 +483,12 @@ def setup_via_phone() -> None:
         )
         return
 
-    # Reserve port, then immediately close so the server can re-bind it.
-    s, port = setup_server._bind_port()
-    s.close()
+    # Reserve the port AND hand the bound socket to the HTTP server.
+    # H5: previously we close()d the bind socket then constructed the
+    # HTTPServer (which re-binds the same port via SO_REUSEADDR). Between
+    # the close and the re-bind, a different LAN process could grab the
+    # port. Pass the bound socket through so the server adopts it directly.
+    bound_sock, port = setup_server._bind_port()
 
     session_token = secrets_lib.token_urlsafe(16)
     url = f"http://{lan_ip}:{port}/setup?token={session_token}"
@@ -513,6 +516,12 @@ def setup_via_phone() -> None:
         png = qr.qr_png(url, module_pixel_size=10, ecc_level="M")
         state_paths.atomic_write(qr_path, png)
     except Exception as e:
+        # We never started the server; close the placeholder socket so
+        # we don't leak the port reservation.
+        try:
+            bound_sock.close()
+        except Exception:
+            pass
         xbmcgui.Dialog().ok(
             "Kodi-AI Setup",
             f"Could not generate QR code: {e}\n\n"
@@ -526,11 +535,13 @@ def setup_via_phone() -> None:
         session_token=session_token,
         lan_ip=lan_ip,
         port=port,
+        bound_socket=bound_sock,
     )
     server_thread = threading.Thread(
         target=server.serve_forever, daemon=True, name="kodi-ai-setup-http",
     )
     server_thread.start()
+    poll_thread = None
     try:
         window = setup_window.SetupWindow(
             "Setup.xml", _addon_path, "Default", "720p",
@@ -541,8 +552,27 @@ def setup_via_phone() -> None:
             port=port,
         )
         window.doModal()
+        # H1: capture the poll thread reference BEFORE deleting the window
+        # so we can join it after the dialog tears down. The polling
+        # thread's setLabel calls on a torn-down native window can segfault;
+        # joining ensures it has exited before we drop the Python wrapper.
+        poll_thread = getattr(window, "_poll_thread", None)
+        # Make sure the polling thread sees the close signal even if the
+        # dialog dismissed via a Kodi-internal path that didn't trigger
+        # our close() override.
+        try:
+            window._closing.set()
+        except Exception:
+            pass
         del window  # break the reference so Kodi releases the native window
     finally:
+        # H1: drain the polling thread BEFORE shutting down the server.
+        # HTTP_TIMEOUT_SECONDS (2s) per request + jitter -> 4s is safe.
+        if poll_thread is not None:
+            try:
+                poll_thread.join(timeout=4)
+            except Exception:
+                pass
         try:
             server.shutdown()
         except Exception:

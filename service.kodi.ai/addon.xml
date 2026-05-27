@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <addon id="service.kodi.ai"
        name="Kodi-AI"
-       version="0.2.0"
+       version="0.2.1"
        provider-name="ivan">
   <requires>
     <import addon="xbmc.python" version="3.0.1"/>
@@ -17,7 +17,8 @@
     <description lang="en_GB">Monitors Kodi logs, classifies issues with a cheap LLM, attempts auto-fixes via OpenRouter tool-use agent, surfaces results via Telegram bot. V1 personal use on Android TV.</description>
     <platform>all</platform>
     <license>MIT</license>
-    <news>0.2.0: phone-driven setup. TV shows a QR code + live progress indicator; phone scans, opens a local web page, does all input. Old TV-keyboard wizard kept as "Manual setup" fallback. Backed by a token-gated local HTTP server with strict CSP, host-header guard, and bad-token self-shutdown.
+    <news>0.2.1: security/correctness fixes from review (dead should_die wired up, audit log redaction on validation errors, focus + control-ID fixes, thread lifecycle hardening, setup_secret stability).
+0.2.0: phone-driven setup. TV shows a QR code + live progress indicator; phone scans, opens a local web page, does all input. Old TV-keyboard wizard kept as "Manual setup" fallback. Backed by a token-gated local HTTP server with strict CSP, host-header guard, and bad-token self-shutdown.
 0.1.6: wizard heavily condensed — each step is one screen + one input. Was ~13 OK-to-continue dialogs, now ~7. Less reading, faster setup.
 0.1.5: replaced wizard's example bot-token string with a clearly-fake placeholder; GitHub secret scanner was flagging the realistic-looking example as a possible leak.
 0.1.4: first-launch toast is passive (no auto-opening the wizard mid-playback); settings page still has the shortcuts.

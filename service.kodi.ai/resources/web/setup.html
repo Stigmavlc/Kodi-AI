@@ -356,7 +356,11 @@
   var TOKEN = "{{TOKEN}}";
   var HAS_OPENROUTER = "{{HAS_OPENROUTER}}" === "true";
   var HAS_BOT = "{{HAS_BOT}}" === "true";
-  var BOT_USERNAME = "{{BOT_USERNAME}}";
+  // BOT_USERNAME is JSON-encoded server-side -- the substitution provides
+  // the surrounding quotes (or "null"/"") so the literal is well-formed
+  // even for unusual usernames. Defence in depth -- Telegram already
+  // restricts the format (M1).
+  var BOT_USERNAME = {{BOT_USERNAME_JS}};
 
   var state = {
     step: 1,
@@ -583,15 +587,24 @@
 
   function beginPairingPoll() {
     var deadline = Date.now() + 60 * 1000;
+    var done = false;
     var timer = null;
     function tick() {
+      if (done) return;
       postJson("/api/check-paired", {})
         .then(function (resp) {
+          // H4: short-circuit redundant ticks. The first tick is fired
+          // synchronously below before `timer` is assigned, so a fast
+          // response would race clearInterval(null) and leave the
+          // interval firing indefinitely. The `done` flag breaks the race.
+          if (done) return;
           if (resp.paired) {
+            done = true;
             if (timer) clearInterval(timer);
             setStatus($("pairStatus"), "ok", "Paired ✓");
             setTimeout(function () { showStep(5); }, 800);
           } else if (Date.now() > deadline) {
+            done = true;
             if (timer) clearInterval(timer);
             setStatus($("pairStatus"), "info",
               "You can finish pairing later from the addon menu. " +
@@ -600,8 +613,8 @@
         })
         .catch(function () { /* transient — keep polling */ });
     }
-    tick();
     timer = setInterval(tick, 2000);
+    tick();
   }
 
   // Boot

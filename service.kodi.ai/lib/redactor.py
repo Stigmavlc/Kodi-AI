@@ -19,6 +19,12 @@ _CANARY_INTERVAL = 100
 
 # --- Patterns ---
 _PATTERNS: list[tuple[re.Pattern, str]] = [
+    # Telegram bot token embedded in a URL path: api.telegram.org/bot{TOKEN}/...
+    # Matched BEFORE the bare-token pattern because the leading `bot` glues
+    # the token to a word char on its left, defeating the `\b` in the
+    # bare-token regex below. Common leak vector: repr(HTTPError) / repr(
+    # JSONDecodeError) embeds the full request URL.
+    (re.compile(r"(?i)(/bot)\d{8,12}:[A-Za-z0-9_-]{30,}"), r"\1<redacted-token>"),
     # Telegram bot token: 8-12 digits : 30+ chars
     (re.compile(r"\b\d{8,12}:[A-Za-z0-9_-]{30,}\b"), "<redacted-token>"),
     # OpenRouter, OpenAI, Anthropic key prefixes
