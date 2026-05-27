@@ -109,3 +109,51 @@ active_cluster_ids: set[str] = set()
 # ---- Paused session registry (T4-owned; T3 reads under lock via callbacks) ----
 paused_sessions: dict[str, Any] = {}  # session_id -> SessionState (defined later)
 paused_sessions_lock = threading.Lock()
+
+
+# ---- FairnessTracker — prevent ResumeWork starvation of LogIncident ----
+class FairnessTracker:
+    """Counts ResumeWork drains; after N consecutive (without a LogIncident
+    drained in between), should_force_log_incident() returns True until the
+    next LogIncident is actually drained.
+
+    Spec: §1.12.
+    """
+    def __init__(self, resume_threshold: int = 10):
+        self._resume_count = 0
+        self._threshold = resume_threshold
+        self._lock = threading.Lock()
+
+    def note_drained(self, payload) -> None:
+        with self._lock:
+            name = type(payload).__name__
+            if name == "ResumeWork":
+                self._resume_count += 1
+            elif name == "LogIncident":
+                self._resume_count = 0
+            # UserMsg: no effect on fairness counter
+
+    def should_force_log_incident(self) -> bool:
+        with self._lock:
+            return self._resume_count >= self._threshold
+
+
+# Module-level instance used by T4 dispatch (lib.service)
+fairness_tracker = FairnessTracker()
+
+
+def has_pending_logincident() -> bool:
+    """Peek work_queue for any LogIncident at any position.
+
+    CPython PriorityQueue exposes ._queue (heap list). Acceptable use here
+    (Kodi pins to CPython 3.x; spec §1.2 documents this version pin).
+    Returns True if any LogIncident is queued, regardless of priority.
+    """
+    try:
+        with work_queue.mutex:
+            for prio, _, payload in list(work_queue.queue):
+                if type(payload).__name__ == "LogIncident":
+                    return True
+    except Exception:
+        return False
+    return False
