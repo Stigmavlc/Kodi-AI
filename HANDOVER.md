@@ -1,9 +1,9 @@
 # Kodi-AI V1 — Session Handover
 
-**Last updated:** 2026-05-27 (in-session: Phases 1-3 COMPLETE + Tasks 4.1-4.6-REV done, reviewer-vetted)
+**Last updated:** 2026-05-27 (in-session: Phases 1-4 COMPLETE, reviewer-vetted)
 **Project root:** `/Users/ivan/Desktop/Web Development  Projects/Completed By Me/Kodi-AI/`
 **Git branch:** `main`
-**Latest commit:** `decd7a6` (fix(log_watcher): buffer-and-evaluate per-tool-boundary (C5))
+**Latest commit:** `64654ec` (fix(log_watcher): wire burst-mode into run() + reset _lag_streak + restore xbmc.log)
 
 This document tracks **exactly what's left to implement**, by phase and by task, so any future session can pick up cleanly. It is read by the `/load-context` slash command at session start and updated by `/save-context` at session end.
 
@@ -87,7 +87,7 @@ Per task, the plan's own task ID maps to a line range in `docs/superpowers/plans
 | 4.4 `lib/log_watcher.py` core (poll/parse/cluster/enqueue) | ✅ done | `7c6ae8e`. Spec §1.4, §3.1. Plan-verbatim, ZERO deviations. 112 unit + 1 integration test pass. First `@pytest.mark.integration` test (~5s). Both reviewers CLEAN. |
 | 4.5 log_watcher 3-signal rotation + 1MB cap + adaptive cadence | ✅ done | `1c420d1`. Spec §1.4. ONE justified deviation: moved `_ticks_since_growth` bookkeeping from `run()` into `_read_new_bytes()` to satisfy plan-locked test that calls `_read_new_bytes()` directly. 4 integration + 112 unit tests pass in isolation. Both reviewers CLEAN. Pre-existing test pollution between suites confirmed (see §4 #77). |
 | **4.6-REVISED** log_watcher buffer-and-evaluate per-tool-boundary | ✅ done | `decd7a6`. Spec §1.3 round-1 fix point 2. 4 declared deviations all reviewer-accepted as justified/equivalent/necessary. Added `last_window_targets()` to ActiveCalls (resolves §4 #23 + #24). 112 unit + 7 integration pass. Both reviewers CLEAN. |
-| **4.7-REVISED** log_watcher boot post-mortem per-session state machine + tool-history-match | ⏸ pending | Spec §1.4. **Round-1 plan-review fix H7 + round-2 fix.** Requires `tool_history[].output_signature` from Task 5.4-AMENDMENT. |
+| **4.7-REVISED** log_watcher boot post-mortem per-session state machine + tool-history-match | ✅ done | First pass `08bbce8` (BOTH reviewers found 2 blockers: burst-mode dead-code, lag_streak no reset). Fix `64654ec` (3 fixes: run() wiring + lag_streak reset + xbmc.log restored). Re-review CLEAN. 112 unit + 11 integration pass. ⚠️ Significant deviations: added `__lt__` to LogIncident/UserMsg/ResumeWork in concurrency.py (defensive); burst-count region expanded from skipped-only to full burst-window (plan defect). |
 
 ### Phase 5 — Triage + reasoner state + reasoner + amendments (7 tasks: 5 base + REVISED 5.4 + AMENDMENT 5.4 + new 5.6)
 
@@ -342,6 +342,18 @@ These are issues caught by reviewers during Phase 0 that are NOT yet fixed and s
 83. **conftest.py integration fixtures access ActiveCalls private internals** (Task 4.6-REVISED code review): `_lock`, `_active_tools`, `_active_sessions`, `_linger` accessed for state reset. Fragile if ActiveCalls is refactored. Cleaner approach: add `ActiveCalls.reset()` method.
 
 84. **§4 #23 and #24 RESOLVED by Task 4.6-REVISED:** `last_window_targets()` is now defined on `ActiveCalls`. (Kept as historical entries.)
+
+85. **🔧 Task 4.7 first-pass had 2 reviewer blockers** (Task 4.7-REVISED): `_maybe_enter_burst_mode_and_read` was added to LogWatcher but NEVER wired into `run()` — burst-mode was dead code at runtime. ALSO `_lag_streak` was never reset after burst fired → would spam under sustained backpressure. Fixed in commit `64654ec`. Lesson: when an implementer adds a new method but doesn't show the call site, dispatch prompts should EXPLICITLY ask for the integration-wiring step in addition to the method body.
+
+86. **`__lt__ = lambda: False` added to LogIncident/UserMsg/ResumeWork in concurrency.py** (Task 4.7-REVISED, defensive prod-code change): test pre-stages 420 items with hardcoded seq literals (0-419) via raw `put_nowait` instead of `enqueue()` (which uses `next(_seq)`). When module's `_seq.count()` collides with test literals, heap sift falls through to comparing `@dataclass(order=False)` payloads → TypeError. Implementer added `__lt__` returning False to all three dataclasses as defensive heap-correctness. Marginal scope expansion — could have been avoided by changing the test to use `enqueue()` or starting hardcoded seqs at 100000+. Production runtime is unaffected (real `_seq` from `itertools.count()` guarantees unique seqs). Document at next plan revision: either accept defensive change OR refactor the test.
+
+87. **Task 4.7 burst-mode counting region expanded** (Task 4.7-REVISED, plan-defect fix): original plan counted ERRORs in skipped region only. Test asserts both `foo` + `bar` in synthetic incident, but with 1MB skip cap from 1.68MB total, `bar` lines were entirely in tail. Implementer expanded counting to span full burst window `[skipped_start, size)`. Plan-level defect; implementer's fix is operationally-useful + makes test pass.
+
+88. **Burst-mode cluster_id second-precision collision** (Task 4.7-REVISED, plan-locked): `f"burst_{int(now.timestamp())}"` — two bursts in same second collide. Pre-existing pattern (see #81 for overrun_synthetic). Future hardening: add sequence counter or fractional-second resolution.
+
+89. **`boot_post_mortem` not wired into orchestrator** (Task 4.7-REVISED, expected): method exists but no call site in production code. Spec §1.4 says called "after T4 sets startup_complete_event". Wire at Task 10.2 (T4 boot pass).
+
+90. **🎓 Process lesson — pre-existing cross-suite test pollution caught reviewer attention again** (Task 4.7-REVISED): both reviewers ran full pytest and noted failures. Both correctly identified as pre-existing per §77 (failures persist when running unit-then-integration). Confirmed: `pytest tests/unit/ tests/integration/ -m integration` fails because unit MagicMocks persist into integration phase. Acceptable in isolation. **Action: prioritize fix when next major refactor of test infra is needed.**
 
 ---
 
