@@ -23,7 +23,7 @@ def test_chat_stream_yields_chunks():
     abort_event = threading.Event()
     chunks = []
     final = None
-    for chunk_text, finish_reason, usage in chat_stream(
+    for chunk_text, finish_reason, usage, _tool_calls in chat_stream(
         api_key="ok", model="m", messages=[{"role": "user", "content": "x"}],
         abort_event=abort_event,
     ):
@@ -52,7 +52,7 @@ def test_chat_stream_aborts_on_event():
     from lib.llm.client import chat_stream
     abort_event = threading.Event()
     chunks = []
-    for i, (text, _, _) in enumerate(chat_stream(
+    for i, (text, _, _, _) in enumerate(chat_stream(
         api_key="ok", model="m", messages=[],
         abort_event=abort_event,
     )):

@@ -138,10 +138,12 @@ def chat_stream(
     max_tokens: int = 4096,
     temperature: float = 0.2,
     timeout: tuple[float, float] = (5.0, 30.0),
-) -> Generator[tuple[str | None, str | None, dict | None], None, None]:
-    """Stream chat completion. Yields (chunk_text, finish_reason, usage).
+) -> Generator[tuple[str | None, str | None, dict | None, list | None], None, None]:
+    """Stream chat completion. Yields (chunk_text, finish_reason, usage, tool_calls).
 
-    finish_reason and usage are None until the terminal chunk.
+    finish_reason and usage are None until the terminal chunk. tool_calls is
+    None on chunks that carry no tool-call deltas (most providers emit them
+    once at finish_reason='tool_calls').
     Caller MUST check abort_event between iterations; this generator
     cleanly closes the socket on next iteration after abort_event is set.
 
@@ -197,8 +199,9 @@ def chat_stream(
             chunk = delta.get("content") or ""
             finish = choice.get("finish_reason")
             usage = obj.get("usage")
-            if chunk or finish or usage:
-                yield chunk if chunk else None, finish, usage
+            tool_calls = delta.get("tool_calls")
+            if chunk or finish or usage or tool_calls:
+                yield (chunk if chunk else None, finish, usage, tool_calls)
     finally:
         try: r.raw.close()
         except Exception: pass

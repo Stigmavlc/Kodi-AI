@@ -1,11 +1,13 @@
 """Reasoner: LLM tool-use agent loop. T4-owned single-threaded.
 
 Skeleton in 5.3: simple non-tool path (one LLM call → final_message).
-Full agent loop with tool dispatch + pause/resume in Task 5.4-5.5.
+Task 5.4: streaming tool loop with mid-stream budget check + tool_history.
 
-Spec: §1.6, §1.7, §3.1, §3.3.
+Spec: §1.6, §1.7, §1.10, §3.1, §3.3, §5.5, §1.4 (tool-history-match).
 """
 from __future__ import annotations
+import json
+import threading
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -14,24 +16,59 @@ from typing import Any
 class ReasonerOutcome:
     final_message: str
     tool_calls_made: int = 0
-    terminal_reason: str = "complete"  # complete | budget_refused | needs_user | aborted | error
+    terminal_reason: str = "complete"
+    # complete | budget_refused | budget_truncated | needs_user | aborted | error | max_turns
     notes: str = ""
     cost_usd: float = 0.0
     snapshot_ids: list[str] = field(default_factory=list)
+    tool_history: list[dict] = field(default_factory=list)
 
 
 class Reasoner:
-    def __init__(self, *, llm_client, api_key: str, router, budget):
+    def __init__(
+        self,
+        *,
+        llm_client,
+        api_key: str,
+        router,
+        budget,
+        tool_registry: dict | None = None,
+    ):
         self.llm = llm_client
         self.api_key = api_key
         self.router = router
         self.budget = budget
+        self.tool_registry = tool_registry or {}
 
     def _estimate_cost(self, model: str, messages: list[dict], max_tokens: int) -> float:
         price = self.router.price_per_mtok(model) or (1.0, 5.0)
         in_p, out_p = price
         approx_in_tokens = sum(len(m.get("content") or "") for m in messages) / 4
         return (approx_in_tokens * in_p + max_tokens * out_p) / 1_000_000
+
+    def _tool_schemas(self) -> list[dict]:
+        return [t.schema_dict() for t in self.tool_registry.values() if hasattr(t, "schema_dict")]
+
+    def _execute_tool(self, name: str, args_json: str, session_id: str) -> dict:
+        if name not in self.tool_registry:
+            return {"success": False, "error": f"unknown tool: {name}", "output": None}
+        try:
+            args = json.loads(args_json)
+        except json.JSONDecodeError as e:
+            return {"success": False, "error": f"invalid args JSON: {e}", "output": None}
+        try:
+            entry = self.tool_registry[name]
+            result = entry(**args) if callable(entry) else entry.execute(args)
+            return {
+                "success": getattr(result, "success", True),
+                "output": getattr(result, "output", str(result)),
+                "actual_state_after": getattr(result, "actual_state_after", None),
+                "snapshot_id": getattr(result, "snapshot_id", None),
+                "error": getattr(result, "error", None),
+                "requested": getattr(result, "requested", f"{name}(...)"),
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e), "output": None}
 
     def run_simple(self, *, messages: list[dict], task_class: str, session_id: str) -> ReasonerOutcome:
         """Single-call path for chat where reasoner has no tools to invoke."""
@@ -48,3 +85,150 @@ class Reasoner:
         actual_cost = (res.tokens_in * price[0] + res.tokens_out * price[1]) / 1_000_000
         self.budget.record_actual(actual_cost)
         return ReasonerOutcome(final_message=res.text, tool_calls_made=0, cost_usd=actual_cost)
+
+    def run_with_tools(
+        self,
+        *,
+        initial_messages: list[dict],
+        task_class: str,
+        session_id: str,
+        max_turns: int = 15,
+        abort_event: threading.Event | None = None,
+    ) -> ReasonerOutcome:
+        """Multi-turn tool-use loop using chat_stream + per-chunk mid-stream budget.
+
+        Each turn streams one LLM response. If accumulated_tool_calls is non-empty
+        at end of stream, execute each tool, append assistant + tool messages, and
+        continue. Otherwise return the accumulated text as final.
+
+        Every return path carries tool_history with per-tool output_signature
+        derived from prefilter.cluster_id_for (round-2 plan-review fix H7 —
+        populates the field that boot_post_mortem tool-history-match reads).
+        """
+        from .prefilter import cluster_id_for
+
+        if abort_event is None:
+            abort_event = threading.Event()
+
+        messages = list(initial_messages)
+        tools = self._tool_schemas() or None
+        model = self.router.pick(task_class)
+        snapshot_ids: list[str] = []
+        tool_history: list[dict] = []
+        cost = 0.0
+        turns = 0
+
+        for turns in range(1, max_turns + 1):
+            est = self._estimate_cost(model, messages, max_tokens=2048)
+            ok, reason = self.budget.pre_call_check(estimated_cost=est)
+            if not ok:
+                return ReasonerOutcome(
+                    final_message="",
+                    terminal_reason="budget_refused",
+                    notes=reason or "",
+                    tool_calls_made=turns - 1,
+                    cost_usd=cost,
+                    snapshot_ids=snapshot_ids,
+                    tool_history=tool_history,
+                )
+
+            accumulated_text = ""
+            accumulated_tool_calls: list = []
+            finish_reason = None
+            final_usage: dict = {}
+            tokens_streamed = 0
+            price = self.router.price_per_mtok(model) or (1.0, 5.0)
+            in_p, out_p = price
+            try:
+                for chunk_text, fr, usage, delta_tool_calls in self.llm.chat_stream(
+                    api_key=self.api_key,
+                    model=model,
+                    messages=messages,
+                    tools=tools,
+                    max_tokens=2048,
+                    abort_event=abort_event,
+                ):
+                    if chunk_text:
+                        accumulated_text += chunk_text
+                        tokens_streamed += max(1, len(chunk_text) // 4)
+                        streamed_cost = tokens_streamed * out_p / 1_000_000
+                        if not self.budget.mid_stream_check(streamed_cost=streamed_cost):
+                            return ReasonerOutcome(
+                                final_message="",
+                                terminal_reason="budget_truncated",
+                                notes=f"mid-stream cap trip at {tokens_streamed} tokens",
+                                tool_calls_made=turns - 1,
+                                cost_usd=cost,
+                                snapshot_ids=snapshot_ids,
+                                tool_history=tool_history,
+                            )
+                    if delta_tool_calls:
+                        accumulated_tool_calls.extend(delta_tool_calls)
+                    if fr:
+                        finish_reason = fr
+                    if usage:
+                        final_usage = usage
+            except Exception as e:
+                return ReasonerOutcome(
+                    final_message="",
+                    terminal_reason="error",
+                    notes=str(e),
+                    tool_calls_made=turns - 1,
+                    cost_usd=cost,
+                    snapshot_ids=snapshot_ids,
+                    tool_history=tool_history,
+                )
+
+            actual = (
+                final_usage.get("prompt_tokens", 0) * in_p
+                + final_usage.get("completion_tokens", 0) * out_p
+            ) / 1_000_000
+            cost += actual
+            self.budget.record_actual(actual)
+
+            if accumulated_tool_calls:
+                for tc in accumulated_tool_calls:
+                    fn = tc.get("function", {})
+                    tool_result = self._execute_tool(
+                        fn.get("name", ""),
+                        fn.get("arguments", "{}"),
+                        session_id,
+                    )
+                    if tool_result.get("snapshot_id"):
+                        snapshot_ids.append(tool_result["snapshot_id"])
+
+                    output_str = str(tool_result.get("output") or "")
+                    tool_history.append({
+                        "name": fn.get("name", ""),
+                        "args_json": fn.get("arguments", "{}"),
+                        "success": bool(tool_result.get("success")),
+                        "output_signature": cluster_id_for(output_str),
+                        "snapshot_id": tool_result.get("snapshot_id"),
+                        "error": tool_result.get("error"),
+                    })
+
+                    messages.append({"role": "assistant", "tool_calls": [tc]})
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.get("id", ""),
+                        "content": json.dumps(tool_result),
+                    })
+                continue
+
+            return ReasonerOutcome(
+                final_message=accumulated_text,
+                tool_calls_made=turns - 1,
+                cost_usd=cost,
+                snapshot_ids=snapshot_ids,
+                tool_history=tool_history,
+            )
+
+        return ReasonerOutcome(
+            final_message="",
+            terminal_reason="max_turns",
+            tool_calls_made=turns,
+            cost_usd=cost,
+            snapshot_ids=snapshot_ids,
+            tool_history=tool_history,
+            notes=f"hit max_turns={max_turns}",
+        )
