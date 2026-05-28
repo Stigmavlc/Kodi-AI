@@ -166,7 +166,22 @@ class TelegramBot:
                     "Please tap one of the buttons above to choose agent mode.",
                 )
                 return
-            # Normal flow: enqueue for the reasoner.
+            # Slash commands (/help, /status, /budget, ...) are handled
+            # deterministically by commands.py — NOT sent to the LLM reasoner.
+            if text.startswith("/"):
+                from . import commands
+                try:
+                    if commands.dispatch(self, chat_id, text):
+                        return
+                except Exception:
+                    self.send_message(chat_id, "That command failed. Try /help.")
+                    return
+                # Unknown slash command — don't feed it to the reasoner.
+                self.send_message(
+                    chat_id, "Unknown command. Send /help for the list.",
+                )
+                return
+            # Normal (non-command) text: enqueue for the reasoner.
             enqueue(UserMsg(chat_id=chat_id, text=text, message_id=mid,
                             reply_to_message_id=reply_to))
 

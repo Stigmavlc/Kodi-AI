@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <addon id="service.kodi.ai"
        name="Kodi-AI"
-       version="0.4.4"
+       version="0.4.5"
        provider-name="ivan">
   <requires>
     <import addon="xbmc.python" version="3.0.1"/>
@@ -17,7 +17,8 @@
     <description lang="en_GB">Monitors Kodi logs, classifies issues with a cheap LLM, attempts auto-fixes via OpenRouter tool-use agent, surfaces results via Telegram bot. V1 personal use on Android TV.</description>
     <platform>all</platform>
     <license>MIT</license>
-    <news>0.4.4: fixed invisible setup code - color tags were missing the alpha byte (6-hex instead of 8-hex AARRGGBB), making cyan/green text fully transparent on the TV.
+    <news>0.4.5: fixed /help and all other slash commands - the bot never dispatched commands (every message went to the LLM); now /help /status /budget /pause etc. work.
+0.4.4: fixed invisible setup code - color tags were missing the alpha byte (6-hex instead of 8-hex AARRGGBB), making cyan/green text fully transparent on the TV.
 0.4.3: setup code now shows on line 1 of the pairing dialog (was clipped below the URL in the non-scrolling dialog).
 0.4.2: relay URL pre-filled by default - no manual paste needed for phone setup.
 0.4.1: fixed bot not starting after phone setup on fresh installs (cross-process secrets cache); worker idempotent re-submit; non-billable OpenRouter key validation; request size guard.

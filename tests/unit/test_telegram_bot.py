@@ -144,3 +144,46 @@ def test_handle_update_unauthorized_message_does_not_enqueue(monkeypatch):
     b._handle_update({"message": {"chat": {"id": 7}, "text": "hello", "message_id": 1}})
     assert concurrency.work_queue.empty()
     assert sent and sent[0][0] == 7
+
+
+def test_handle_update_slash_command_dispatched_not_enqueued(monkeypatch):
+    """An authorized /help must be handled by commands.dispatch, NOT sent to
+    the reasoner. Regression for the bug where every message (commands too)
+    fell through to enqueue(UserMsg) and the command interface was dead."""
+    from lib import concurrency
+    import lib.telegram.bot as bot_mod
+    import lib.telegram.auth as auth
+    import lib.telegram.commands as commands
+    import lib.telegram.setup_dm_state as dm
+    monkeypatch.setattr(auth, "is_authorized", lambda cid: True)
+    monkeypatch.setattr(auth, "try_authorize_first_start", lambda cid, s: False)
+    monkeypatch.setattr(dm, "get_state", lambda cid: dm.DONE)
+    dispatched = []
+    monkeypatch.setattr(commands, "dispatch",
+                        lambda bot, chat_id, text: dispatched.append((chat_id, text)) or True)
+    while not concurrency.work_queue.empty():
+        concurrency.work_queue.get_nowait()
+    b = bot_mod.TelegramBot(bot_token="123:abc")
+    b._handle_update({"message": {"chat": {"id": 7}, "text": "/help", "message_id": 1}})
+    assert dispatched == [(7, "/help")]
+    assert concurrency.work_queue.empty()  # NOT routed to the reasoner
+
+
+def test_handle_update_unknown_command_replies_not_enqueued(monkeypatch):
+    """Unknown /command → 'Unknown command' reply, never sent to the reasoner."""
+    from lib import concurrency
+    import lib.telegram.bot as bot_mod
+    import lib.telegram.auth as auth
+    import lib.telegram.setup_dm_state as dm
+    monkeypatch.setattr(auth, "is_authorized", lambda cid: True)
+    monkeypatch.setattr(auth, "try_authorize_first_start", lambda cid, s: False)
+    monkeypatch.setattr(dm, "get_state", lambda cid: dm.DONE)
+    sent = []
+    monkeypatch.setattr(bot_mod.TelegramBot, "send_message",
+                        lambda self, chat_id, text, **kw: sent.append((chat_id, text)))
+    while not concurrency.work_queue.empty():
+        concurrency.work_queue.get_nowait()
+    b = bot_mod.TelegramBot(bot_token="123:abc")
+    b._handle_update({"message": {"chat": {"id": 7}, "text": "/notacommand", "message_id": 1}})
+    assert concurrency.work_queue.empty()
+    assert sent and "Unknown command" in sent[0][1]
