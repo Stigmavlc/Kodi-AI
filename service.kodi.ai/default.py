@@ -324,12 +324,11 @@ def setup_via_phone() -> None:
     # 4. Show the code + URL in a DialogProgress.
     progress = xbmcgui.DialogProgress()
     progress.create("Kodi-AI Setup", "")
-    code_line = (
-        f"[B][COLOR {COLOR_ACCENT}]{user_code}[/COLOR][/B]"
-    )
+    # Code FIRST on line 1 — DialogProgress shows ~3 lines and does not
+    # scroll, so the most important value must lead or it gets clipped.
     body = (
-        f"On your phone open:\n[B]{relay_url}[/B]\n\n"
-        f"Enter code:\n{code_line}\n\n"
+        f"Code:  [B][COLOR {COLOR_ACCENT}]{user_code}[/COLOR][/B]\n"
+        f"On your phone open:  [B]{relay_url}[/B]\n"
         f"Waiting for your phone..."
     )
     progress.update(0, body)
