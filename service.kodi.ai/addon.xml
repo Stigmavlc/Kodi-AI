@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <addon id="service.kodi.ai"
        name="Kodi-AI"
-       version="0.3.1"
+       version="0.3.2"
        provider-name="ivan">
   <requires>
     <import addon="xbmc.python" version="3.0.1"/>
@@ -17,7 +17,8 @@
     <description lang="en_GB">Monitors Kodi logs, classifies issues with a cheap LLM, attempts auto-fixes via OpenRouter tool-use agent, surfaces results via Telegram bot. V1 personal use on Android TV.</description>
     <platform>all</platform>
     <license>MIT</license>
-    <news>0.3.1: critical security + correctness fixes from review (token redaction in logs, migration safety, sk-or- prefix enforcement, settings.xml readonly fix, delete-message failure handling).
+    <news>0.3.2: fixed Settings setup instructions - phone-typing (Kore/Yatse) tips were hidden by Kodi collapsing consecutive separators; removed glyphs that showed as boxes; clearer step layout.
+0.3.1: critical security + correctness fixes from review (token redaction in logs, migration safety, sk-or- prefix enforcement, settings.xml readonly fix, delete-message failure handling).
 0.3.0: complete UX rewrite — setup now lives inline in Settings, no more popup windows. Telegram bot guides you through OpenRouter key + mode selection via DM. No more local HTTP server, HTTPS, or browser-compat issues.
 0.2.1: security/correctness fixes from review (dead should_die wired up, audit log redaction on validation errors, focus + control-ID fixes, thread lifecycle hardening, setup_secret stability).
 0.2.0: phone-driven setup. TV shows a QR code + live progress indicator; phone scans, opens a local web page, does all input. Old TV-keyboard wizard kept as "Manual setup" fallback. Backed by a token-gated local HTTP server with strict CSP, host-header guard, and bad-token self-shutdown.

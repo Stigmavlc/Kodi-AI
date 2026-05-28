@@ -17,8 +17,8 @@ Boot ordering (spec §1.1):
   3. T2 + T3 start only AFTER startup_complete_event (gate enforced here).
 
 Shutdown (spec §1.2):
-  abort_event.set() → health.record_clean_shutdown() → audit shutdown →
-  push sentinel on work_queue → join T2 (3s) / T3 (15s) / T4 (5s) →
+  abort_event.set() -> health.record_clean_shutdown() -> audit shutdown ->
+  push sentinel on work_queue -> join T2 (3s) / T3 (15s) / T4 (5s) ->
   log_capture.uninstall().
 
 v0.3.0 settings-inline setup:
@@ -115,7 +115,7 @@ def _get_reasoner(api_key: str):
 # ---- T4 handlers (Task 10.3 — inlined per design) ----
 
 def _handle_incident(incident: LogIncident, bot_holder: BotHolder) -> None:
-    """LogIncident → triage → CRITICAL: reasoner with tools."""
+    """LogIncident -> triage -> CRITICAL: reasoner with tools."""
     api_key = lib_secrets.get_secret("openrouter_key")
     if not api_key:
         return
@@ -158,7 +158,7 @@ def _handle_incident(incident: LogIncident, bot_holder: BotHolder) -> None:
 
 
 def _handle_user_msg(msg: UserMsg, bot_holder: BotHolder) -> None:
-    """UserMsg → chat-mode reasoner. Echoes config errors back to user."""
+    """UserMsg -> chat-mode reasoner. Echoes config errors back to user."""
     api_key = lib_secrets.get_secret("openrouter_key")
     bot = bot_holder.get()
     if not api_key:
@@ -179,7 +179,7 @@ def _handle_user_msg(msg: UserMsg, bot_holder: BotHolder) -> None:
 
 
 def _handle_resume_work(rw: ResumeWork, bot_holder: BotHolder) -> None:
-    """ResumeWork → look up paused session (memory then disk) → reasoner.resume_from."""
+    """ResumeWork -> look up paused session (memory then disk) -> reasoner.resume_from."""
     api_key = lib_secrets.get_secret("openrouter_key")
     if not api_key:
         return
@@ -298,11 +298,11 @@ def _compute_status_display() -> str:
     """Return the right status_display label for the current configuration.
 
     Decision tree:
-      bot_token missing               → "⚠ Not configured"
-      bot_token present, no allowlist → "⚠ Bot verified — send /start to @<u>"
-      paired, no openrouter_key       → "⚠ Paired — waiting for OpenRouter key"
-      paired + key, mid-DM-flow       → "⚠ Paired — pick agent mode in Telegram"
-      everything set                  → "✓ Active — monitoring Kodi logs"
+      bot_token missing               -> "Not configured"
+      bot_token present, no allowlist -> "Bot verified - send /start to @<u>"
+      paired, no openrouter_key       -> "Paired - waiting for OpenRouter key"
+      paired + key, mid-DM-flow       -> "Paired - pick agent mode in Telegram"
+      everything set                  -> "Active - monitoring Kodi logs"
 
     H1 — Mode-pending branch uses `setup_dm_state` (not Kodi's enum value)
     as the signal. `settings.xml` defaults `mode` to "auto", so reading
@@ -315,16 +315,16 @@ def _compute_status_display() -> str:
     """
     has_bot = bool(lib_secrets.get_secret("bot_token"))
     if not has_bot:
-        return "⚠ Not configured"
+        return "Not configured"
     allowlist = tg_auth.chat_allowlist()
     if not allowlist:
         username = settings.get_string("bot_username", "") or ""
         if username and not username.startswith("("):
-            return f"⚠ Bot verified — send /start to @{username}"
-        return "⚠ Bot verified — pair in Telegram"
+            return f"Bot verified - send /start to @{username} in Telegram"
+        return "Bot verified - open Telegram to pair"
     has_key = bool(lib_secrets.get_secret("openrouter_key"))
     if not has_key:
-        return "⚠ Paired — waiting for OpenRouter key"
+        return "Paired - waiting for OpenRouter key (check Telegram)"
     # H1 — check setup_dm_state for any allowlisted chat that's still
     # mid-flow. AWAITING_MODE means key validated but mode-button not
     # tapped. If any chat is mid-flow, surface the "pick agent mode"
@@ -338,11 +338,11 @@ def _compute_status_display() -> str:
             except (TypeError, ValueError):
                 continue
             if state == _dm_state.AWAITING_MODE:
-                return "⚠ Paired — pick agent mode in Telegram"
+                return "Paired - pick agent mode in Telegram"
     except Exception:
         # Bare except — status computation must never raise.
         pass
-    return "✓ Active — monitoring Kodi logs"
+    return "Active - monitoring Kodi logs"
 
 
 def _refresh_status_label() -> None:
@@ -370,8 +370,8 @@ def _handle_settings_changed(bot_holder: BotHolder, state: dict) -> None:
     Flow:
       1. Invalidate the settings cache.
       2. Read bot_token from Kodi settings.
-      3. If bot_token unchanged or empty → just refresh status_display + return.
-      4. If bot_token changed: call getMe → if valid, copy to secrets, clear
+      3. If bot_token unchanged or empty -> just refresh status_display + return.
+      4. If bot_token changed: call getMe -> if valid, copy to secrets, clear
          Kodi settings copy, refresh derived display fields, start T3.
          If invalid: set status to error. Keep user input (so they can fix it).
 
@@ -456,7 +456,7 @@ def _handle_settings_changed_inner(bot_holder: BotHolder, state: dict) -> None:
         try:
             settings.set_string(
                 "status_display",
-                "⚠ Could not reach Telegram — retry later",
+                "Could not reach Telegram - retry later",
             )
         except Exception:
             pass
@@ -476,7 +476,7 @@ def _handle_settings_changed_inner(bot_holder: BotHolder, state: dict) -> None:
         )
         return
 
-    # HTTP 4xx → invalid token (most commonly 401).
+    # HTTP 4xx -> invalid token (most commonly 401).
     if not body.get("ok") or status_code >= 400:
         # H4 — Telegram error response bodies CAN echo the request URL
         # in their `description` field on rare error paths. Redact the
@@ -490,7 +490,7 @@ def _handle_settings_changed_inner(bot_holder: BotHolder, state: dict) -> None:
         try:
             settings.set_string(
                 "status_display",
-                "✗ Invalid bot token — check the token from BotFather",
+                "Invalid bot token - check it from BotFather",
             )
         except Exception:
             pass
@@ -505,6 +505,17 @@ def _handle_settings_changed_inner(bot_holder: BotHolder, state: dict) -> None:
 
     # Valid! Extract username (used in pairing_command + status).
     username = (body.get("result") or {}).get("username", "") or ""
+
+    # Defensive diagnostic: getMe reporting ok with an empty username is
+    # suspicious — a valid bot always has a username. When this happens the
+    # downstream status/pairing labels fall back to their generic "pair in
+    # Telegram" form, which previously looked like stale state on-device.
+    # Log a redacted warning so we can distinguish a real bug from a stale
+    # display next time (no token in this message; username is non-secret).
+    if not username:
+        xbmc.log("[service.kodi.ai] settings_changed: getMe ok but username "
+                 "empty - status will show generic 'pair in Telegram'",
+                 xbmc.LOGWARNING)
 
     # Promote bot_token: secrets.json (source of truth) + clear Kodi setting
     # (security hardening — prevents the plaintext token from sitting in
@@ -566,11 +577,11 @@ def _handle_settings_changed_inner(bot_holder: BotHolder, state: dict) -> None:
         if username:
             settings.set_string(
                 "status_display",
-                f"⚠ Bot verified — send /start to @{username}",
+                f"Bot verified - send /start to @{username} in Telegram",
             )
         else:
             settings.set_string(
-                "status_display", "⚠ Bot verified — pair in Telegram",
+                "status_display", "Bot verified - open Telegram to pair",
             )
     except Exception:
         pass
@@ -592,16 +603,16 @@ def _handle_settings_changed_inner(bot_holder: BotHolder, state: dict) -> None:
     try:
         import xbmcgui
         toast_text = (
-            f"Bot verified — send /start to @{username}"
+            f"Bot verified - send /start to @{username}"
             if username
-            else "Bot verified — pair in Telegram"
+            else "Bot verified - pair in Telegram"
         )
         xbmcgui.Dialog().notification("Kodi-AI", toast_text, time=5000)
     except Exception:
         pass
 
 
-# ---- v0.2.x → v0.3.0 migration helper ----
+# ---- v0.2.x -> v0.3.0 migration helper ----
 
 
 def _migrate_v0_2_x_bot_token() -> None:
@@ -680,7 +691,7 @@ HEARTBEAT_INTERVAL_S = 300.0
 
 
 def t4_worker_body(bot_holder: BotHolder) -> None:
-    """T4 main loop: boot pass → work_queue drain + heartbeat."""
+    """T4 main loop: boot pass -> work_queue drain + heartbeat."""
     # Boot pass: each step is wrapped — a single failure must not kill T4.
     try:
         state_paths.ensure_dirs()
@@ -761,7 +772,7 @@ def t4_worker_body(bot_holder: BotHolder) -> None:
     except Exception:
         pass
 
-    # v0.2.x → v0.3.0 migration (one-shot if applicable).
+    # v0.2.x -> v0.3.0 migration (one-shot if applicable).
     _migrate_v0_2_x_bot_token()
 
     # If a bot_token already exists in secrets (already-paired user, or
@@ -792,7 +803,7 @@ def t4_worker_body(bot_holder: BotHolder) -> None:
             )
             xbmcgui.Dialog().notification(
                 "Kodi-AI",
-                "Setup needed — open Configure to begin",
+                "Setup needed - open Configure to begin",
                 icon=_icon_path if os.path.exists(_icon_path) else "",
                 time=6000,
                 sound=False,
@@ -862,7 +873,7 @@ def main() -> None:
     except Exception:
         pass
     try:
-        audit_log.write("startup", details={"version": "0.3.1"})
+        audit_log.write("startup", details={"version": "0.3.2"})
     except Exception:
         pass
 
@@ -886,7 +897,7 @@ def main() -> None:
 
     # T3 starts on-demand via BotHolder (either right now during boot if
     # bot_token already exists in secrets, or later when the user types
-    # one into Kodi settings → SettingsChanged → _handle_settings_changed).
+    # one into Kodi settings -> SettingsChanged -> _handle_settings_changed).
     # The boot-time start happens inside t4_worker_body BEFORE the work
     # loop, so by the time main() resumes here, T3 may already be running
     # (no work needed) or will start later (no work needed).

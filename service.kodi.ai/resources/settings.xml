@@ -1,23 +1,34 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <settings>
   <category label="Telegram">
-    <setting id="status_display" type="text" label="Status" enable="false" default="⚠ Not configured"/>
-    <setting type="lsep" label="Step 1: Create your bot"/>
-    <setting id="step1_hint1" type="lsep" label="Open Telegram → message @BotFather"/>
-    <setting id="step1_hint2" type="lsep" label="Send /newbot, follow prompts, copy token"/>
-    <setting id="bot_token" type="text" label="Bot token" option="hidden" default=""/>
-    <setting id="bot_username" type="text" label="Bot username" enable="false" default="(auto-detected after token)"/>
-    <setting type="lsep" label="Step 2: Pair your phone"/>
-    <setting id="step2_hint1" type="lsep" label="In Telegram, send this to your bot:"/>
+    <!-- Live status (service updates this via setSetting) -->
+    <setting id="status_display" type="text" label="Status" enable="false" default="Not configured"/>
+
+    <!-- TIP placed first: how to avoid TV-remote typing. lsep header, then
+         real (disabled) text settings carry the detail so the lsep run breaks. -->
+    <setting type="lsep" label="EASIER TYPING - paste from your phone"/>
+    <setting id="tip_app" type="text" label="1. Install on phone" enable="false" default="Kore (Android) or Yatse (iOS)"/>
+    <setting id="tip_http" type="text" label="2. Enable in Kodi" enable="false" default="Settings - Services - Control - HTTP"/>
+    <setting id="tip_use" type="text" label="3. Then" enable="false" default="use the app keyboard to paste below"/>
+
+    <!-- STEP 1 -->
+    <setting type="lsep" label="STEP 1 - Create your Telegram bot"/>
+    <setting id="step1_open" type="text" label="In Telegram, open" enable="false" default="@BotFather"/>
+    <setting id="step1_send" type="text" label="Send to it" enable="false" default="/newbot, follow prompts, copy token"/>
+    <setting id="bot_token" type="text" label="Bot token (paste here)" option="hidden" default=""/>
+    <setting id="bot_username" type="text" label="Bot username" enable="false" default="(detected after token)"/>
+
+    <!-- STEP 2 -->
+    <setting type="lsep" label="STEP 2 - Pair your phone"/>
+    <setting id="step2_send" type="text" label="In Telegram, send to your bot" enable="false" default="(set bot token first)"/>
     <setting id="pairing_command" type="text" label="Pairing command" enable="false" default="(set bot token first)"/>
-    <setting type="lsep" label="Step 3: Finish in Telegram"/>
-    <setting id="step3_hint1" type="lsep" label="The bot will ask for your OpenRouter key"/>
-    <setting id="step3_hint2" type="lsep" label="Get one at openrouter.ai/keys (~$5)"/>
-    <setting id="step3_hint3" type="lsep" label="Then it will ask for agent mode"/>
-    <setting type="lsep" label="Tip: paste from phone"/>
-    <setting id="tip_hint1" type="lsep" label="Install Kore (Android) or Yatse (iOS)"/>
-    <setting id="tip_hint2" type="lsep" label="to type from your phone — much easier"/>
-    <setting id="tip_hint3" type="lsep" label="Enable Kodi → Services → Control → HTTP"/>
+
+    <!-- STEP 3 -->
+    <setting type="lsep" label="STEP 3 - Finish in the Telegram chat"/>
+    <setting id="step3_key" type="text" label="Bot will ask for" enable="false" default="OpenRouter key - openrouter.ai/keys"/>
+    <setting id="step3_mode" type="text" label="Then asks for" enable="false" default="Auto or Manual mode"/>
+
+    <!-- Maintenance -->
     <setting type="lsep" label="Maintenance"/>
     <setting id="reset_bot_owner" type="action" label="Reset bot owner" action="RunScript(special://home/addons/service.kodi.ai/default.py,reset_bot)"/>
   </category>
