@@ -32,6 +32,11 @@ class SessionState:
     paused_at: float  # epoch seconds when paused
     budget_blob: dict  # MonotonicBudget.to_dict()
     cluster_id: str | None  # originating LogIncident cluster (None for chat-init)
+    # v0.6.0 Part 2 (criterion F): for a CHAT-initiated session that paused on a
+    # confirm-gate, this is the Telegram chat_id to reply back to on resume. None
+    # for incident-initiated sessions (those resolve via the allowlist broadcast).
+    # Defaulted so older serialized states (no key) still load via from_dict.
+    origin_chat_id: int | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)

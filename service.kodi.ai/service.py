@@ -63,6 +63,7 @@ from lib.concurrency import (
     SettingsChanged,
 )
 from lib.llm import client as llm_client, router as llm_router_mod, budget as llm_budget
+from lib.llm import prompts
 from lib.telegram import auth as tg_auth, formatters as tg_fmt
 import lib.tools  # noqa: F401 — triggers @tool autoload
 from lib.tools import registry as tool_registry
@@ -171,6 +172,59 @@ def _get_reasoner(api_key: str):
     )
 
 
+def _system_message(prompt_name: str) -> dict | None:
+    """Load a system prompt by name and return it as a chat system message,
+    or None if it can't be loaded.
+
+    v0.6.0 Part 2 (criterion B): the reasoner_system / chat_system prompts were
+    authored but loaded NOWHERE. We inject them here. A missing/unreadable
+    prompt MUST NOT crash the handler — we log a redacted warning and fall back
+    to no system prompt (the agent still runs, just without the persona/scope
+    guidance), which is strictly better than a crashed incident handler.
+    """
+    try:
+        p = prompts.load(prompt_name)
+    except Exception as e:
+        try:
+            xbmc.log(
+                f"[service.kodi.ai] {redactor.redact(f'prompt load failed ({prompt_name}): {e!r}')}",
+                xbmc.LOGWARNING,
+            )
+        except Exception:
+            pass
+        return None
+    body = (getattr(p, "body", "") or "").strip()
+    if not body:
+        return None
+    return {"role": "system", "content": body}
+
+
+# v0.6.0 Part 2 (criterion E): the chat path exposes a RESTRICTED catalog —
+# read-only inspection tools + reversible mutations. It EXCLUDES the tools that
+# are genuinely dangerous when driven from free-text Telegram messages:
+#   - http_get        (arbitrary network egress)
+#   - write_file      (filesystem write)
+#   - delete_file     (filesystem delete)
+# Read-only file reads (read_log / read_log_old) ARE allowed. The incident path
+# keeps the full catalog (allowed_tools=None). This is a name allowlist passed
+# to run_with_tools(allowed_tools=...); the schema generator filters to it.
+CHAT_ALLOWED_TOOLS: set[str] = {
+    # read-only inspection
+    "read_log", "read_log_old",
+    "list_addons", "get_addon_details",
+    "get_kodi_setting", "get_addon_setting",
+    "kodi_jsonrpc",          # read-only allowlist enforced inside the tool
+    "verify_fix",            # read-only verifier
+    # reversible mutations (each gated by the confirm-gate before it runs)
+    "set_kodi_setting",
+    "enable_addon", "disable_addon",
+    "set_addon_setting",
+    "restart_addon",
+    # ask_user stays available so the chat agent can ask clarifying questions
+    "ask_user",
+}
+
+
 # ---- T4 handlers (Task 10.3 — inlined per design) ----
 
 def _handle_incident(incident: LogIncident, bot_holder: BotHolder) -> None:
@@ -222,7 +276,17 @@ def _handle_incident(incident: LogIncident, bot_holder: BotHolder) -> None:
 
     r = _get_reasoner(api_key)
     session_id = f"sess_{int(time.time() * 1000)}"
-    msgs = [
+    # D: reset per-incident spend so it doesn't accumulate across sessions.
+    try:
+        _get_budget().reset_incident()
+    except Exception:
+        pass
+    msgs: list[dict] = []
+    # B: prepend the reasoner_system prompt (graceful if missing).
+    sys_msg = _system_message("reasoner_system")
+    if sys_msg is not None:
+        msgs.append(sys_msg)
+    msgs.append(
         {
             "role": "user",
             "content": (
@@ -233,7 +297,7 @@ def _handle_incident(incident: LogIncident, bot_holder: BotHolder) -> None:
                 f"Lines:\n" + "\n".join(incident.raw_lines[:5])
             ),
         }
-    ]
+    )
     # Bracket the reasoner run as an active session so a CONCURRENT incident's
     # detect notification is suppressed (dedupe checks active-session count).
     # finally: ensures the bracket always closes even if the reasoner raises.
@@ -262,10 +326,23 @@ def _handle_user_msg(msg: UserMsg, bot_holder: BotHolder) -> None:
         return
     r = _get_reasoner(api_key)
     session_id = f"chat_{int(time.time() * 1000)}"
+    # D: reset per-incident spend at the start of each chat session too.
+    try:
+        _get_budget().reset_incident()
+    except Exception:
+        pass
+    # B: prepend the chat_system prompt (graceful if missing).
+    msgs: list[dict] = []
+    sys_msg = _system_message("chat_system")
+    if sys_msg is not None:
+        msgs.append(sys_msg)
+    msgs.append({"role": "user", "content": msg.text})
+    # E: chat runs on the RESTRICTED catalog (no http_get / file writes).
     outcome = r.run_with_tools(
-        initial_messages=[{"role": "user", "content": msg.text}],
+        initial_messages=msgs,
         task_class="t1_simple",
         session_id=session_id,
+        allowed_tools=CHAT_ALLOWED_TOOLS,
     )
     _handle_outcome(outcome, bot, session_id, None, target_chat_id=msg.chat_id)
 
@@ -295,10 +372,21 @@ def _handle_resume_work(rw: ResumeWork, bot_holder: BotHolder) -> None:
             f"[service.kodi.ai] resume budget rehydrate failed: {e}",
             xbmc.LOGWARNING,
         )
+    # F: a CHAT-originated session (origin_chat_id set) resumes on the restricted
+    # chat catalog and replies back to the originating chat; an incident session
+    # uses the full catalog and resolves via the allowlist broadcast.
+    origin_chat_id = getattr(state, "origin_chat_id", None)
+    is_chat = origin_chat_id is not None
     outcome = r.resume_from(
-        state=state, user_reply=rw.user_reply, task_class="t2_reason"
+        state=state,
+        user_reply=rw.user_reply,
+        task_class="t1_simple" if is_chat else "t2_reason",
+        allowed_tools=CHAT_ALLOWED_TOOLS if is_chat else None,
     )
-    _handle_outcome(outcome, bot_holder.get(), state.session_id, state.cluster_id)
+    _handle_outcome(
+        outcome, bot_holder.get(), state.session_id, state.cluster_id,
+        target_chat_id=origin_chat_id,
+    )
 
 
 def _handle_outcome(outcome, bot, session_id: str, cluster_id, target_chat_id=None) -> None:
@@ -361,6 +449,8 @@ def _handle_outcome(outcome, bot, session_id: str, cluster_id, target_chat_id=No
             paused_at=time.time(),
             budget_blob=budget_blob,
             cluster_id=cluster_id,
+            # F: remember the chat to reply to when a CHAT confirm-gate resumes.
+            origin_chat_id=target_chat_id,
         )
 
         def send_telegram() -> bool:
