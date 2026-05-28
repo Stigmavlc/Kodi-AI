@@ -121,7 +121,25 @@ class TelegramBot:
                 if auth.try_authorize_first_start(chat_id, secret):
                     self._on_first_authorize(chat_id)
                 else:
-                    self.send_message(chat_id, "Invalid secret. Send /start &lt;secret&gt;.")
+                    # BLOCKER 1 belt-and-suspenders: distinguish "no setup in
+                    # progress" (no secret stored) from "wrong code" (a secret
+                    # IS stored but didn't match). The first is the common case
+                    # when a user taps an old pair_url before starting setup on
+                    # the TV — a flat "Invalid secret" is confusing there.
+                    try:
+                        have_secret = auth.current_setup_secret() is not None
+                    except Exception:
+                        have_secret = True  # fail safe to the stricter message
+                    if not have_secret:
+                        self.send_message(
+                            chat_id,
+                            "No pairing in progress. Start setup on your TV "
+                            "first (Settings - Kodi-AI - Set up via phone).",
+                        )
+                    else:
+                        self.send_message(
+                            chat_id, "Invalid secret - check the code.",
+                        )
                 return
             if not auth.is_authorized(chat_id):
                 self.send_message(chat_id, "Please send /start &lt;secret&gt; from your Kodi setup.")

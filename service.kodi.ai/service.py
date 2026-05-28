@@ -396,6 +396,40 @@ def _handle_settings_changed_inner(bot_holder: BotHolder, state: dict) -> None:
     except Exception:
         pass
 
+    # 1b. Cross-process pairing nudge (v0.4.0 device-code + manual flows).
+    # The setup runs in the SCRIPT process (default.py), which writes the
+    # bot_token + openrouter_key straight into secrets.json and then bumps
+    # the internal `_pairing_nudge` setting to signal THIS (service) process
+    # to (re)start T3 — the script process can't touch BotHolder, which lives
+    # here. set_token_and_start is idempotent, so calling it whenever the
+    # nudge changes and a token exists is safe (no-op if T3 already runs the
+    # same token). We track the last-seen nudge in `state` to debounce.
+    try:
+        nudge = settings.get_string("_pairing_nudge", "") or ""
+    except Exception:
+        nudge = ""
+    if nudge and nudge != state.get("last_pairing_nudge", ""):
+        state["last_pairing_nudge"] = nudge
+        try:
+            token = lib_secrets.get_secret("bot_token") or ""
+        except Exception:
+            token = ""
+        if token:
+            # Keep the debounce token in sync so a later settings edit that
+            # re-reads the (now-empty) Kodi bot_token setting doesn't try to
+            # re-promote — and so this token counts as "known".
+            state["last_known_bot_token"] = token
+            try:
+                bot_holder.set_token_and_start(token)
+            except Exception as e:
+                err = redactor.redact(f"pairing-nudge start T3 failed: {e!r}")
+                xbmc.log(
+                    f"[service.kodi.ai] settings_changed: {err}",
+                    xbmc.LOGERROR,
+                )
+        _refresh_status_label()
+        return
+
     # 2. Read bot_token from KODI settings (NOT secrets — the user just
     # typed this into the Configure dialog, it hasn't moved to secrets.json
     # yet). On error / missing, default to "".
@@ -818,8 +852,16 @@ def t4_worker_body(bot_holder: BotHolder) -> None:
     # Persistent state for SettingsChanged debouncing.
     # last_known_bot_token: seeded with whatever's in secrets so a residual
     # value across restart doesn't trigger spurious revalidation.
+    # last_pairing_nudge: seeded with the current nudge value so a residual
+    # nudge across restart doesn't trigger a spurious T3 (re)start — the boot
+    # pass already starts T3 if a token exists.
+    try:
+        _seed_nudge = settings.get_string("_pairing_nudge", "") or ""
+    except Exception:
+        _seed_nudge = ""
     settings_state: dict = {
         "last_known_bot_token": lib_secrets.get_secret("bot_token") or "",
+        "last_pairing_nudge": _seed_nudge,
     }
 
     last_heartbeat = time.monotonic()

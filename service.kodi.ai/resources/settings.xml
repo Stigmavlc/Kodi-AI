@@ -1,34 +1,16 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <settings>
   <category label="Telegram">
-    <!-- Live status (service updates this via setSetting) -->
+    <!-- Live status (service updates this via setSetting). enable=false read-only.
+         Each read-only display field below is separated by a focusable action
+         button or an lsep so the d-pad never lands in a run of consecutive
+         disabled fields (the v0.3.x navigation dead-zone bug). -->
     <setting id="status_display" type="text" label="Status" enable="false" default="Not configured"/>
-
-    <!-- TIP placed first: how to avoid TV-remote typing. lsep header, then
-         real (disabled) text settings carry the detail so the lsep run breaks. -->
-    <setting type="lsep" label="EASIER TYPING - paste from your phone"/>
-    <setting id="tip_app" type="text" label="1. Install on phone" enable="false" default="Kore (Android) or Yatse (iOS)"/>
-    <setting id="tip_http" type="text" label="2. Enable in Kodi" enable="false" default="Settings - Services - Control - HTTP"/>
-    <setting id="tip_use" type="text" label="3. Then" enable="false" default="use the app keyboard to paste below"/>
-
-    <!-- STEP 1 -->
-    <setting type="lsep" label="STEP 1 - Create your Telegram bot"/>
-    <setting id="step1_open" type="text" label="In Telegram, open" enable="false" default="@BotFather"/>
-    <setting id="step1_send" type="text" label="Send to it" enable="false" default="/newbot, follow prompts, copy token"/>
-    <setting id="bot_token" type="text" label="Bot token (paste here)" option="hidden" default=""/>
-    <setting id="bot_username" type="text" label="Bot username" enable="false" default="(detected after token)"/>
-
-    <!-- STEP 2 -->
-    <setting type="lsep" label="STEP 2 - Pair your phone"/>
-    <setting id="step2_send" type="text" label="In Telegram, send to your bot" enable="false" default="(set bot token first)"/>
+    <setting type="lsep" label="Setup"/>
+    <setting id="setup_via_phone" type="action" label="Set up via phone (recommended)" action="RunScript(special://home/addons/service.kodi.ai/default.py,setup_via_phone)"/>
+    <setting id="setup_manual" type="action" label="Manual setup (type bot token on TV)" action="RunScript(special://home/addons/service.kodi.ai/default.py,setup_manual)"/>
+    <setting id="bot_username" type="text" label="Bot username" enable="false" default="(not set)"/>
     <setting id="pairing_command" type="text" label="Pairing command" enable="false" default="(set bot token first)"/>
-
-    <!-- STEP 3 -->
-    <setting type="lsep" label="STEP 3 - Finish in the Telegram chat"/>
-    <setting id="step3_key" type="text" label="Bot will ask for" enable="false" default="OpenRouter key - openrouter.ai/keys"/>
-    <setting id="step3_mode" type="text" label="Then asks for" enable="false" default="Auto or Manual mode"/>
-
-    <!-- Maintenance -->
     <setting type="lsep" label="Maintenance"/>
     <setting id="reset_bot_owner" type="action" label="Reset bot owner" action="RunScript(special://home/addons/service.kodi.ai/default.py,reset_bot)"/>
   </category>
@@ -49,6 +31,11 @@
     <setting id="redaction_allowlist_extra" type="text" label="Redaction allow-list extra (CSV)" default=""/>
   </category>
   <category label="Advanced">
+    <setting id="relay_url" type="text" label="Relay URL (Cloudflare Worker)" default=""/>
+    <!-- Internal: written by default.py (script process) to nudge the service
+         process to (re)start the bot after the phone/manual setup stores the
+         token in secrets.json. Not meant for the user to edit. -->
+    <setting id="_pairing_nudge" type="text" label="(internal) pairing nudge" enable="false" default=""/>
     <setting id="triage_rate_per_min" type="number" label="Triage rate/min" default="6" min="1" max="60"/>
     <setting id="t2_poll_active_ms" type="number" label="T2 poll cadence (active, ms)" default="750" min="100" max="5000"/>
     <setting id="t2_poll_idle_ms" type="number" label="T2 poll cadence (idle, ms)" default="2500" min="500" max="10000"/>

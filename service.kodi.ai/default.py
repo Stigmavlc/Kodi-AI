@@ -1,19 +1,22 @@
 """Kodi-AI UI entry point. Invoked via RunScript(default.py [, action]).
 
-v0.3.0 settings-inline setup pivot:
-  All configuration lives inline in Kodi's standard Configure dialog
-  (settings.xml). default.py is now used only for two actions invoked
-  from settings.xml or the addon's Program-add-ons launch:
+v0.4.0 device-code setup pivot:
+  Setup moves OFF the TV keyboard. default.py exposes these actions
+  (wired from settings.xml or the addon's Program-add-ons launch):
 
-    (none)        → status panel with action menu
-    reset_bot     → confirm + clear allowlist + generate new setup_secret
+    (none)          -> status panel with action menu
+    setup_via_phone -> OAuth-device-code flow via the user's Cloudflare
+                      Worker relay (show code on TV, fill form on phone)
+    setup_manual    -> no-phone fallback: type the bot token on the TV,
+                      validate, store, finish pairing in Telegram
+    reset_bot       -> confirm + clear allowlist + generate new setup_secret
 
-The old phone-driven setup wizard (setup_via_phone, setup_wizard) and the
-QR-based show_secret screen are gone in v0.3.0 because the same content
-is exposed inline in the Configure dialog (pairing_command label) and the
-bot DM flow handles OpenRouter key + mode selection.
+Cross-process note: default.py runs in the SCRIPT process, which CANNOT
+touch BotHolder (it lives in the service process). After storing secrets
+we bump the internal `_pairing_nudge` setting; the service's
+onSettingsChanged handler reacts by starting T3.
 
-Spec: §1.14, §5.2, §7.3 + v0.3.0 settings-inline setup pivot.
+Spec: sec 1.14, sec 5.2, sec 7.3 + v0.4.0 device-code setup pivot.
 """
 from __future__ import annotations
 import os
@@ -29,7 +32,9 @@ import xbmcaddon
 import xbmcgui
 import xbmcvfs  # noqa: F401 (used transitively via lib.state_paths)
 
-from lib import state_paths, settings, secrets
+import requests
+
+from lib import state_paths, settings, secrets, redactor
 from lib.telegram import auth as tg_auth
 
 
@@ -209,9 +214,319 @@ def view_audit() -> None:
         xbmcgui.Dialog().ok("Audit Log Error", str(e))
 
 
+# ---- v0.4.0 device-code + manual setup -------------------------------------
+
+POLL_INTERVAL_S = 3.0
+SESSION_TTL_S = 300.0
+_HTTP_TIMEOUT = (5, 15)
+
+
+def _nudge_service() -> None:
+    """Cross-process T3 nudge. default.py runs in the SCRIPT process, which
+    cannot reach BotHolder (it lives in the service process). Bump an internal
+    settings key so the service's onSettingsChanged handler re-reads secrets
+    and starts T3. Best-effort - a failure here just delays bot start until
+    the next Kodi restart (boot pass starts T3 if a token exists)."""
+    try:
+        settings.set_string("_pairing_nudge", str(time.time()))
+    except Exception:
+        pass
+
+
+def _refresh_pairing_labels(username: str) -> None:
+    """Update the read-only bot_username + pairing_command labels (ASCII only).
+    The setup_secret is already stored; re-read it to build the command."""
+    try:
+        secret = tg_auth.current_setup_secret() or ""
+        if username:
+            settings.set_string("bot_username", username)
+        if username and secret:
+            settings.set_string(
+                "pairing_command", f"/start {secret} to @{username}",
+            )
+        elif secret:
+            settings.set_string("pairing_command", f"/start {secret}")
+        settings.set_string(
+            "status_display",
+            (f"Bot verified - open @{username} in Telegram and tap Start"
+             if username
+             else "Bot verified - open Telegram to pair"),
+        )
+    except Exception:
+        pass
+
+
+def _redacted_err(prefix: str, exc: Exception) -> str:
+    """Build a user-safe, redacted one-liner for a network/HTTP failure.
+    Telegram/relay URLs and tokens can ride inside exception reprs, so we
+    always run them through the redactor before showing or logging."""
+    try:
+        return redactor.redact(f"{prefix}: {exc!r}")
+    except Exception:
+        return prefix
+
+
+def setup_via_phone() -> None:
+    """OAuth-device-code setup through the user's Cloudflare Worker relay.
+
+    Kodi OWNS the setup_secret (BLOCKER 1): we generate + store it BEFORE
+    talking to the relay, send it UP in /api/device/new, and use our copy
+    for pairing regardless of what comes back. The device_code travels in
+    the Authorization header on every poll (BLOCKER 3). The received bot is
+    human-confirmed (BLOCKER 2b) before any secret is stored.
+    """
+    # 1. Relay URL must be configured + look like an HTTPS URL.
+    relay_url = (settings.get_string("relay_url", "") or "").strip().rstrip("/")
+    if not relay_url or not relay_url.lower().startswith("https://"):
+        xbmcgui.Dialog().ok(
+            "Kodi-AI Setup",
+            "Set relay_url in Settings - Advanced first. "
+            "See cloudflare/DEPLOY.md.",
+        )
+        return
+
+    # 2. Generate + store the setup_secret NOW (Kodi owns it).
+    try:
+        setup_secret = tg_auth.generate_setup_secret()
+    except Exception as e:
+        xbmcgui.Dialog().ok(
+            "Kodi-AI Setup", _redacted_err("Could not start setup", e),
+        )
+        return
+
+    # 3. Ask the relay to mint a device/user code pair.
+    try:
+        resp = requests.post(
+            f"{relay_url}/api/device/new",
+            json={"setup_secret": setup_secret},
+            timeout=_HTTP_TIMEOUT,
+        )
+        data = resp.json()
+    except Exception as e:
+        xbmcgui.Dialog().ok(
+            "Kodi-AI Setup",
+            "Could not reach your relay.\n\n"
+            + _redacted_err("Error", e)
+            + "\n\nCheck the Relay URL in Settings - Advanced.",
+        )
+        return
+
+    user_code = (data or {}).get("user_code") or ""
+    device_code = (data or {}).get("device_code") or ""
+    if not user_code or not device_code:
+        xbmcgui.Dialog().ok(
+            "Kodi-AI Setup",
+            "Relay did not return a code. Re-check cloudflare/DEPLOY.md "
+            "and that the Worker is deployed.",
+        )
+        return
+
+    # 4. Show the code + URL in a DialogProgress.
+    progress = xbmcgui.DialogProgress()
+    progress.create("Kodi-AI Setup", "")
+    code_line = (
+        f"[B][COLOR {COLOR_ACCENT}]{user_code}[/COLOR][/B]"
+    )
+    body = (
+        f"On your phone open:\n[B]{relay_url}[/B]\n\n"
+        f"Enter code:\n{code_line}\n\n"
+        f"Waiting for your phone..."
+    )
+    progress.update(0, body)
+
+    # 5. Poll loop.
+    abort = xbmc.Monitor()
+    start = time.time()
+    received = None
+    while True:
+        # Cancellation / shutdown checks - never write secrets if either.
+        if progress.iscanceled() or abort.abortRequested():
+            progress.close()
+            return
+        elapsed = time.time() - start
+        if elapsed >= SESSION_TTL_S:
+            progress.close()
+            xbmcgui.Dialog().ok(
+                "Kodi-AI Setup", "Code expired, try again.",
+            )
+            return
+        pct = min(99, int((elapsed / SESSION_TTL_S) * 100))
+        progress.update(pct, body)
+
+        try:
+            poll = requests.get(
+                f"{relay_url}/api/device/poll",
+                headers={"Authorization": f"Bearer {device_code}"},
+                timeout=_HTTP_TIMEOUT,
+            )
+            pdata = poll.json()
+        except Exception as e:
+            # Transient network error - keep polling (don't abort the whole
+            # flow on a single blip). Log redacted for diagnostics.
+            xbmc.log(
+                f"[service.kodi.ai] {_redacted_err('poll error', e)}",
+                xbmc.LOGDEBUG,
+            )
+            pdata = {"status": "pending"}
+
+        status = (pdata or {}).get("status")
+        if status == "ready":
+            received = pdata
+            break
+        if status == "expired":
+            progress.close()
+            xbmcgui.Dialog().ok(
+                "Kodi-AI Setup", "Code expired, try again.",
+            )
+            return
+
+        # Sleep in short slices so cancel/abort stay responsive.
+        slept = 0.0
+        while slept < POLL_INTERVAL_S:
+            if progress.iscanceled() or abort.abortRequested():
+                progress.close()
+                return
+            if abort.waitForAbort(0.5):
+                progress.close()
+                return
+            slept += 0.5
+
+    # 6. Extract payload. setup_secret should match ours; if not, trust ours.
+    payload = (received or {}).get("data") or {}
+    bot_token = payload.get("bot_token") or ""
+    openrouter_key = payload.get("openrouter_key") or ""
+    mode = payload.get("mode") or "auto"
+    bot_username = payload.get("bot_username") or ""
+    returned_secret = (received or {}).get("setup_secret") or ""
+    if returned_secret and returned_secret != setup_secret:
+        xbmc.log(
+            "[service.kodi.ai] setup_via_phone: relay returned a setup_secret "
+            "that does not match ours - using our stored secret",
+            xbmc.LOGWARNING,
+        )
+
+    # Always close the progress dialog before any modal yes/no.
+    progress.close()
+
+    if not bot_token or not openrouter_key:
+        xbmcgui.Dialog().ok(
+            "Kodi-AI Setup",
+            "Your phone did not send complete details. Please try again.",
+        )
+        return
+
+    # 7. Human confirmation (BLOCKER 2b) - never store an attacker's bot.
+    confirmed = xbmcgui.Dialog().yesno(
+        "Confirm",
+        (f"Received bot @{bot_username} and an OpenRouter key.\n\n"
+         f"Is @{bot_username} YOUR bot?"),
+        yeslabel="Yes, it's mine",
+        nolabel="No, cancel",
+    )
+    if not confirmed:
+        # Abort: store nothing. (setup_secret remains set for a retry.)
+        return
+
+    # 8. Store secrets + settings. setup_secret is already stored (step 2).
+    try:
+        secrets.set_secret("bot_token", bot_token)
+        secrets.set_secret("openrouter_key", openrouter_key)
+        settings.set_string("mode", mode if mode in ("auto", "manual") else "auto")
+        if bot_username:
+            settings.set_string("bot_username", bot_username)
+    except Exception as e:
+        xbmcgui.Dialog().ok(
+            "Kodi-AI Setup", _redacted_err("Could not save settings", e),
+        )
+        return
+
+    # 9. + 10. Cross-process nudge + refresh display labels.
+    _refresh_pairing_labels(bot_username)
+    _nudge_service()
+
+    # 11. Final instruction.
+    xbmcgui.Dialog().ok(
+        "Almost done",
+        (f"Open your bot @{bot_username} in Telegram and tap Start "
+         f"(or send /start to it) to finish pairing."),
+    )
+
+
+def setup_manual() -> None:
+    """No-phone / no-relay fallback: type the bot token on the TV, validate it
+    via getMe, store it, generate the setup_secret, nudge the service to start
+    T3, and tell the user to finish in Telegram. The OpenRouter key + mode are
+    collected later by the bot's DM flow (after /start), same as before."""
+    token = xbmcgui.Dialog().input(
+        "Paste bot token (from @BotFather)",
+    )
+    token = (token or "").strip()
+    if not token:
+        return
+
+    # Validate via getMe.
+    try:
+        resp = requests.get(
+            f"https://api.telegram.org/bot{token}/getMe",
+            timeout=_HTTP_TIMEOUT,
+        )
+        body = resp.json()
+    except Exception as e:
+        # Redact: the Telegram URL embeds the token in the exception repr.
+        xbmc.log(
+            f"[service.kodi.ai] {_redacted_err('manual getMe error', e)}",
+            xbmc.LOGWARNING,
+        )
+        xbmcgui.Dialog().ok(
+            "Kodi-AI Setup",
+            "Could not reach Telegram. Check your connection and try again.",
+        )
+        return
+
+    if not isinstance(body, dict) or not body.get("ok"):
+        xbmcgui.Dialog().ok(
+            "Kodi-AI Setup",
+            "That bot token did not validate. Re-copy it from @BotFather.",
+        )
+        return
+
+    username = (body.get("result") or {}).get("username") or ""
+
+    # Store token + generate the pairing secret.
+    try:
+        secrets.set_secret("bot_token", token)
+        tg_auth.generate_setup_secret()
+        if username:
+            settings.set_string("bot_username", username)
+    except Exception as e:
+        xbmcgui.Dialog().ok(
+            "Kodi-AI Setup", _redacted_err("Could not save token", e),
+        )
+        return
+
+    _refresh_pairing_labels(username)
+    _nudge_service()
+
+    secret = tg_auth.current_setup_secret() or ""
+    if username:
+        msg = (
+            f"Bot @{username} verified.\n\n"
+            f"In Telegram, open @{username} and send:\n"
+            f"[B]/start {secret}[/B]\n\n"
+            f"The bot will then ask for your OpenRouter key + mode."
+        )
+    else:
+        msg = (
+            f"Bot verified.\n\n"
+            f"In Telegram, send to your bot:\n[B]/start {secret}[/B]\n\n"
+            f"The bot will then ask for your OpenRouter key + mode."
+        )
+    xbmcgui.Dialog().ok("Almost done", msg)
+
+
 def reset_bot() -> None:
     """Confirm + clear allowlist + generate a new setup secret. Wired from
-    settings.xml (Configure → Telegram → Reset bot owner)."""
+    settings.xml (Configure -> Telegram -> Reset bot owner)."""
     if xbmcgui.Dialog().yesno(
         "Reset Bot Owner",
         "Clear allowlist + generate a new setup secret?\n\nThis cannot be undone.",
@@ -233,13 +548,17 @@ def reset_bot() -> None:
         xbmcgui.Dialog().ok(
             "Reset",
             f"New secret: [COLOR {COLOR_ACCENT}][B]{new_secret}[/B][/COLOR]\n\n"
-            f"Configure → Telegram now shows the new pairing command.",
+            f"Configure -> Telegram now shows the new pairing command.",
         )
 
 
 def main() -> None:
     action = sys.argv[1] if len(sys.argv) > 1 else ""
-    if action == "reset_bot":
+    if action == "setup_via_phone":
+        setup_via_phone()
+    elif action == "setup_manual":
+        setup_manual()
+    elif action == "reset_bot":
         reset_bot()
     else:
         show_status_panel()
