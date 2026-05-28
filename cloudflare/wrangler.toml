@@ -17,9 +17,12 @@ main = "worker.js"
 compatibility_date = "2024-11-01"
 
 # KV namespace that stores the short-lived pairing sessions.
-# Run `wrangler kv namespace create KODI_AI_SESSIONS` and paste the returned
-# id below (replace REPLACE_WITH_KV_NAMESPACE_ID). The binding name
+# The id below is this project's namespace (a KV id is just an account-scoped
+# identifier — not a secret; it's useless without Cloudflare account access).
+# If you are self-hosting your OWN relay, run
+#   `wrangler kv namespace create KODI_AI_SESSIONS`
+# and replace the id below with the one it prints. The binding name
 # KODI_AI_SESSIONS must stay exactly as-is — worker.js references it.
 [[kv_namespaces]]
 binding = "KODI_AI_SESSIONS"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+id = "11fab949e8e94ab78749e087a407c69b"
