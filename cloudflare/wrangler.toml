@@ -1,0 +1,25 @@
+# Cloudflare Worker config for the Kodi-AI device-code relay.
+#
+# This is YOUR OWN relay — deploy it on your free Cloudflare account.
+# See DEPLOY.md for the full step-by-step.
+#
+# Quick version:
+#   1. npm install -g wrangler        (or: npm create cloudflare@latest)
+#   2. wrangler login
+#   3. wrangler kv namespace create KODI_AI_SESSIONS
+#         -> copy the printed id into the [[kv_namespaces]] block below
+#   4. wrangler deploy
+#   5. copy the printed https://kodi-ai-relay.<your-subdomain>.workers.dev URL
+#      into Kodi: Settings -> Kodi-AI -> Advanced -> Relay URL
+
+name = "kodi-ai-relay"
+main = "worker.js"
+compatibility_date = "2024-11-01"
+
+# KV namespace that stores the short-lived pairing sessions.
+# Run `wrangler kv namespace create KODI_AI_SESSIONS` and paste the returned
+# id below (replace REPLACE_WITH_KV_NAMESPACE_ID). The binding name
+# KODI_AI_SESSIONS must stay exactly as-is — worker.js references it.
+[[kv_namespaces]]
+binding = "KODI_AI_SESSIONS"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"

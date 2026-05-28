@@ -1,0 +1,100 @@
+# Manual smoke tests for the Kodi-AI relay Worker.
+#
+# The Worker is NOT in the Python test gate — test it here with curl against
+# either `wrangler dev` (http://localhost:8787) or your deployed Worker
+# (https://kodi-ai-relay.<subdomain>.workers.dev).
+#
+# Set BASE to whichever you are testing:
+#
+#   export BASE=http://localhost:8787
+#   # or
+#   export BASE=https://kodi-ai-relay.your-subdomain.workers.dev
+#
+# Then run the curl blocks below in order. Replace placeholders
+# (<DEVICE_CODE>, <USER_CODE>, real bot token / OpenRouter key) as you go.
+
+# ---------------------------------------------------------------------------
+# 1. Kodi mints a session. Kodi OWNS the setup_secret and sends it up.
+#    Response: { "user_code": "XXXX-XXXX", "device_code": "...", "expires_in": 300 }
+# ---------------------------------------------------------------------------
+curl -s -X POST "$BASE/api/device/new" \
+  -H "Content-Type: application/json" \
+  -d '{"setup_secret":"test-secret-abc123"}'
+echo
+
+# ---------------------------------------------------------------------------
+# 2. The mobile page (open in a browser). Pre-fills the code via ?code=.
+# ---------------------------------------------------------------------------
+# Browser: $BASE/
+# Browser: $BASE/?code=XXXX-XXXX
+
+# ---------------------------------------------------------------------------
+# 3. Phone validates the bot token (server-side getMe). NEVER echoes the
+#    upstream body. Response: { "ok": true, "username": "..." } or
+#    { "ok": false, "error": "invalid_token" }.
+# ---------------------------------------------------------------------------
+curl -s -X POST "$BASE/api/validate-telegram" \
+  -H "Content-Type: application/json" \
+  -d '{"bot_token":"123456:REPLACE_WITH_REAL_BOT_TOKEN"}'
+echo
+
+# ---------------------------------------------------------------------------
+# 4. Phone validates the OpenRouter key (1-token ping). Response:
+#    { "ok": true } | { "ok": false, "error": "invalid_key" | "no_credit" }.
+# ---------------------------------------------------------------------------
+curl -s -X POST "$BASE/api/validate-openrouter" \
+  -H "Content-Type: application/json" \
+  -d '{"api_key":"sk-or-REPLACE_WITH_REAL_KEY"}'
+echo
+
+# ---------------------------------------------------------------------------
+# 5. Poll BEFORE submit — should be pending. device_code goes in the
+#    Authorization header (NOT the URL — Cloudflare logs URLs).
+#    Response: { "status": "pending" }.
+# ---------------------------------------------------------------------------
+curl -s "$BASE/api/device/poll" \
+  -H "Authorization: Bearer <DEVICE_CODE_FROM_STEP_1>"
+echo
+
+# ---------------------------------------------------------------------------
+# 6. Phone submits everything. Response:
+#    { "ok": true, "bot_username": "...", "pair_url": "https://t.me/...?start=..." }
+# ---------------------------------------------------------------------------
+curl -s -X POST "$BASE/api/submit" \
+  -H "Content-Type: application/json" \
+  -d '{"user_code":"<USER_CODE_FROM_STEP_1>","bot_token":"123456:REAL","openrouter_key":"sk-or-REAL","mode":"auto"}'
+echo
+
+# ---------------------------------------------------------------------------
+# 7. Poll AFTER submit — should be ready, with data + setup_secret.
+#    Response: { "status": "ready", "data": {...}, "setup_secret": "..." }.
+# ---------------------------------------------------------------------------
+curl -s "$BASE/api/device/poll" \
+  -H "Authorization: Bearer <DEVICE_CODE_FROM_STEP_1>"
+echo
+
+# ---------------------------------------------------------------------------
+# 8. Poll AGAIN — should now be expired (tombstone-on-read; secrets gone).
+#    Response: { "status": "expired" }.
+# ---------------------------------------------------------------------------
+curl -s "$BASE/api/device/poll" \
+  -H "Authorization: Bearer <DEVICE_CODE_FROM_STEP_1>"
+echo
+
+# ---------------------------------------------------------------------------
+# 9. Submit with a bogus code — should be code_expired.
+# ---------------------------------------------------------------------------
+curl -s -X POST "$BASE/api/submit" \
+  -H "Content-Type: application/json" \
+  -d '{"user_code":"ZZZZ-ZZZZ","bot_token":"x","openrouter_key":"y","mode":"auto"}'
+echo
+
+# ---------------------------------------------------------------------------
+# 10. Submit cap: POST /api/submit with the SAME bad code 6 times; the 6th
+#     returns { "ok": false, "error": "too_many_attempts" }.
+# ---------------------------------------------------------------------------
+# for i in $(seq 1 6); do
+#   curl -s -X POST "$BASE/api/submit" -H "Content-Type: application/json" \
+#     -d '{"user_code":"<LIVE_USER_CODE>","bot_token":"bad","openrouter_key":"bad","mode":"auto"}'
+#   echo
+# done
