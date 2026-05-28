@@ -82,12 +82,15 @@ class FakeBot:
         return {"ok": True, "result": {}}
 
 
-def _outcome(terminal_reason, final_message="", notes=""):
+def _outcome(terminal_reason, final_message="", notes="", pending_tool=None,
+             pending_args=None):
     from lib.reasoner import ReasonerOutcome
     return ReasonerOutcome(
         final_message=final_message,
         terminal_reason=terminal_reason,
         notes=notes,
+        pending_tool=pending_tool,
+        pending_args=pending_args,
     )
 
 
@@ -156,7 +159,11 @@ def test_handle_incident_releases_session_counter_when_reasoner_raises(
     """Load-bearing: if the reasoner raises, the try/finally MUST release the
     active-session counter. A leak would leave _active_sessions > 0 forever,
     and detect_dedupe_check_and_arm() suppresses ALL future detects while a
-    session is 'active' — i.e. one crash would permanently silence the addon."""
+    session is 'active' — i.e. one crash would permanently silence the addon.
+
+    LOW-4: the crash is now CAUGHT and mapped to an 'error' resolution (it must
+    NOT propagate out of _handle_incident — otherwise the user is left hanging
+    after the 'detected' toast). So no exception escapes here."""
     import service
     from lib import secrets, notifier
     secrets.set_secret("openrouter_key", "sk-or-test")
@@ -172,10 +179,45 @@ def test_handle_incident_releases_session_counter_when_reasoner_raises(
     holder.get.return_value = None
 
     assert notifier._active_sessions == 0
-    with pytest.raises(RuntimeError):
-        service._handle_incident(_incident(), holder)
-    # The finally block must have run despite the exception.
+    # No exception propagates (LOW-4 fail-safe).
+    service._handle_incident(_incident(), holder)
+    # The finally block must have run despite the crash.
     assert notifier._active_sessions == 0
+
+
+def test_handle_incident_reasoner_crash_notifies_error(
+    setup_paths, stub_xbmcgui, capture_notify, monkeypatch,
+):
+    """LOW-4: a reasoner dispatch/stream CRASH (run_with_tools raises) must still
+    map to an 'error' resolution notification, so the user isn't left hanging
+    after the 'detected' toast. The error path reuses notify_user."""
+    import service
+    from lib import secrets
+    secrets.set_secret("openrouter_key", "sk-or-test")
+    monkeypatch.setattr(service.triage, "classify", lambda *a, **k: "CRITICAL")
+    monkeypatch.setattr(service.tg_auth, "chat_allowlist", lambda: [42])
+
+    def fake_get_reasoner(api_key):
+        fake = mock.MagicMock()
+        fake.run_with_tools.side_effect = RuntimeError("stream blew up")
+        return fake
+
+    monkeypatch.setattr(service, "_get_reasoner", fake_get_reasoner)
+    holder = mock.MagicMock()
+    holder.get.return_value = FakeBot()
+
+    service._handle_incident(_incident(), holder)
+
+    # First notification is the "detected" toast; a LATER one is the error
+    # resolution (toast at minimum). At least two notifications total.
+    assert len(capture_notify) >= 2, (
+        "reasoner crash produced no resolution notification (silent hang)"
+    )
+    # An error-style resolution toast must be present.
+    toasts = [(c["toast_text"] or "").lower() for c in capture_notify]
+    assert any("error" in t for t in toasts), (
+        f"no error resolution toast among {toasts!r}"
+    )
 
 
 def test_handle_incident_non_critical_no_notification(
@@ -288,6 +330,47 @@ def test_handle_outcome_error_redacts_notes(
     assert capture_notify
     joined = (capture_notify[0]["telegram_text"] or "") + (capture_notify[0]["toast_text"] or "")
     assert "ABCdefGHIjklMNOpqrSTUvwxYZabcdefgHIjkl" not in joined
+
+
+# ---- HIGH-1: secret egress in the confirm prompt ----
+
+def test_confirm_prompt_redacts_secret_bearing_pending_args(
+    setup_paths, stub_xbmcgui, capture_notify, monkeypatch,
+):
+    """HIGH-1 regression: the needs_user confirm prompt renders pending_args. If
+    the model proposes a mutation whose args carry a secret (e.g.
+    set_addon_setting(value=<token>)), that secret MUST be redacted before it is
+    sent to Telegram via bot.send_message — exactly like the final_message and
+    error paths already redact."""
+    import service
+    monkeypatch.setattr(service.tg_auth, "chat_allowlist", lambda: [42])
+    # Let the real pause_sequence call our send closure; just don't persist.
+    monkeypatch.setattr(service.pause_sequence, "pause_and_persist",
+                        lambda *, state, budget, telegram_send_callable:
+                        telegram_send_callable())
+
+    bot = FakeBot()
+    secret_token = "1234567890:ABCdefGHIjklMNOpqrSTUvwxYZabcdefgHIjkl"
+    pending_args = (
+        '{"addon_id": "plugin.video.foo", "key": "password", '
+        f'"value": "{secret_token}"}}'
+    )
+    outcome = _outcome(
+        "needs_user", pending_tool="set_addon_setting", pending_args=pending_args,
+    )
+    service._handle_outcome(outcome, bot, "sess_1", "clstr-1")
+
+    # The confirm message reached Telegram...
+    assert bot.sent, "confirm message was never sent"
+    sent_text = "".join(text for _cid, text in bot.sent)
+    # ...and the secret token is NOT present verbatim (redacted to a placeholder).
+    assert secret_token not in sent_text
+    # Redaction runs BEFORE HTML-escape, so the placeholder is escaped in the
+    # final body (correct order: redact secret first, then escape for HTML send).
+    assert "redacted-token" in sent_text
+    # The (non-secret) tool name + the non-secret addon_id are still shown.
+    assert "set_addon_setting" in sent_text
+    assert "plugin.video.foo" in sent_text
 
 
 # ---- C: chat replies must NOT get the incident toast ----

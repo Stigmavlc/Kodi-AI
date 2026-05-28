@@ -118,6 +118,51 @@ class Reasoner:
         return out
 
     @staticmethod
+    def _merge_tool_call_deltas(accumulated: list, deltas: list) -> list:
+        """Fold streamed tool-call deltas into `accumulated`, merging by `index`.
+
+        HIGH-2 safety net. chat_stream already assembles complete tool calls, but
+        this guarantees one well-formed call per index regardless of the source:
+
+          - A delta carrying an explicit `index` is merged into the matching
+            accumulated call (id/name filled when present; `function.arguments`
+            CONCATENATED across fragments). This is the real-streaming shape.
+          - A delta with NO `index` is treated as a COMPLETE call from a
+            non-fragmenting source (e.g. the unit-test FakeStreams that emit one
+            whole delta per call) and appended as-is — preserving the prior
+            extend() semantics so single-complete-delta callers are unchanged.
+
+        Returns the (possibly new) accumulated list. Operates positionally: the
+        Nth indexed call maps to accumulated[N] when N < len, else a new slot.
+        """
+        out = list(accumulated)
+        for d in deltas or []:
+            if not isinstance(d, dict):
+                continue
+            idx = d.get("index")
+            if idx is None:
+                # Complete call from a non-fragmenting source → append verbatim.
+                out.append(d)
+                continue
+            # Grow the list so position `idx` exists.
+            while len(out) <= idx:
+                out.append({"id": None, "type": "function",
+                            "function": {"name": None, "arguments": ""}})
+            slot = out[idx]
+            fn_slot = slot.setdefault("function", {"name": None, "arguments": ""})
+            if d.get("id"):
+                slot["id"] = d["id"]
+            if d.get("type"):
+                slot["type"] = d["type"]
+            fn = d.get("function") or {}
+            if fn.get("name"):
+                fn_slot["name"] = fn["name"]
+            frag = fn.get("arguments")
+            if frag:
+                fn_slot["arguments"] = (fn_slot.get("arguments") or "") + frag
+        return out
+
+    @staticmethod
     def _needs_confirmation(tool_obj, args_json: str) -> bool:
         """Confirm-gate predicate (v0.6.0 Part 2, criterion A).
 
@@ -125,13 +170,22 @@ class Reasoner:
         per the EXISTING tool_routing_decision contract (tier=="confirm" OR
         disruptive(args) is truthy).
 
+        Fail-closed (LOW-1/LOW-2): the gate presumes danger when a registered
+        tool's safety classification is UNKNOWN. A tool whose .tier is missing
+        (None) is treated as needs-confirmation rather than silently executed —
+        an absent tier should never happen for a real @tool fn (the decorator
+        always sets it), but if it ever does we pause for approval instead of
+        applying an unclassified mutation.
+
         MagicMock-safety: real @tool functions always carry a string .tier
         ("immediate"|"confirm"). Test doubles (MagicMock) return a MagicMock for
-        any unset attribute — that is NOT a real routing signal, so we only
-        consult tool_routing_decision when .tier is an actual str. When .tier
-        is not a real string (mock/absent), we return False here and rely on the
-        legacy post-execution markers (requires_user_confirmation / NEEDS_USER),
-        which keeps every pre-0.6.0 test (and the ask_user path) unregressed.
+        any unset attribute — that is NOT a real routing signal and NOT a real
+        absence, so we only consult tool_routing_decision when .tier is an actual
+        str, fail closed when .tier is explicitly None, and otherwise (a
+        MagicMock auto-attr) defer to the legacy post-execution markers
+        (requires_user_confirmation / NEEDS_USER). This keeps every pre-0.6.0
+        test (and the ask_user path) unregressed while making the gate fail safe
+        for a genuinely unclassified real tool.
         """
         if tool_obj is None:
             return False
@@ -143,8 +197,17 @@ class Reasoner:
         # intact and avoids a re-pause loop.
         if getattr(tool_obj, "requires_user_confirmation", False) is True:
             return False
-        tier = getattr(tool_obj, "tier", None)
+        # Use a sentinel so a tool that has NO `tier` attribute at all is
+        # distinguished from one whose tier is explicitly None.
+        _MISSING = object()
+        tier = getattr(tool_obj, "tier", _MISSING)
+        # Fail closed: an explicitly-absent classification (None) on a real tool
+        # → presume the action needs confirmation.
+        if tier is None:
+            return True
         if not isinstance(tier, str):
+            # Either a missing attribute (sentinel) or a MagicMock auto-attr from
+            # a test double — not a real routing signal. Defer to legacy markers.
             return False
         try:
             args = json.loads(args_json)
@@ -446,7 +509,16 @@ class Reasoner:
                                 tool_history=tool_history,
                             )
                     if delta_tool_calls:
-                        accumulated_tool_calls.extend(delta_tool_calls)
+                        # chat_stream (HIGH-2) already merges streamed tool-call
+                        # fragments by index and surfaces COMPLETE calls once at
+                        # the terminal chunk, so a plain extend is correct here.
+                        # _merge_tool_call_deltas is a harmless safety net: it
+                        # re-folds by index in case a non-streaming source (or a
+                        # test double) ever feeds raw fragments, guaranteeing one
+                        # well-formed call per index reaches dispatch.
+                        accumulated_tool_calls = self._merge_tool_call_deltas(
+                            accumulated_tool_calls, delta_tool_calls
+                        )
                     if fr:
                         finish_reason = fr
                     if usage:
@@ -471,6 +543,21 @@ class Reasoner:
             self._persist_budget()
 
             if accumulated_tool_calls:
+                # MED-4: parallel tool calls are UNSUPPORTED in V1. The OpenAI
+                # message format requires ONE assistant message carrying ALL N
+                # tool_calls followed by N tool-result messages; but the
+                # confirm-gate (and the legacy NEEDS_USER path) can pause MID-turn
+                # before some calls execute, which would leave a grouped
+                # assistant message with tool_calls that have no matching result
+                # — malformed history that some providers reject with a 400. To
+                # keep the history strictly well-formed on every path we SERIALIZE
+                # to a single tool call per turn: process only the first call,
+                # append exactly one assistant(tool_calls=[tc]) + one tool result,
+                # and let the model re-request any remaining actions on the next
+                # turn (it sees the first result and continues). Single-call turns
+                # (the overwhelmingly common case) are unchanged.
+                if len(accumulated_tool_calls) > 1:
+                    accumulated_tool_calls = accumulated_tool_calls[:1]
                 for tc in accumulated_tool_calls:
                     fn = tc.get("function", {})
                     tool_name = fn.get("name", "")

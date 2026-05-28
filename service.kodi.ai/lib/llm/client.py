@@ -142,8 +142,17 @@ def chat_stream(
     """Stream chat completion. Yields (chunk_text, finish_reason, usage, tool_calls).
 
     finish_reason and usage are None until the terminal chunk. tool_calls is
-    None on chunks that carry no tool-call deltas (most providers emit them
-    once at finish_reason='tool_calls').
+    None on every chunk EXCEPT the terminal one: real OpenAI-compatible streaming
+    (OpenRouter) FRAGMENTS each tool call across many chunks — the first delta for
+    a call carries index/id/function.name + a PARTIAL function.arguments, and
+    later deltas carry the SAME index with more arguments fragments (usually no
+    id/name). This generator merges those fragments BY INDEX and surfaces the
+    fully-assembled, ordered list of COMPLETE tool calls exactly once, on the
+    terminal chunk (finish_reason set / [DONE]). Each surfaced call has the
+    OpenAI shape {id, type:"function", function:{name, arguments}} with arguments
+    concatenated into one valid JSON string — so the reasoner never sees a
+    truncated arg blob or an empty tool_name. (HIGH-2.)
+
     Caller MUST check abort_event between iterations; this generator
     cleanly closes the socket on next iteration after abort_event is set.
 
@@ -175,6 +184,53 @@ def chat_stream(
     if r.status_code >= 500: raise LLMServerError(f"{r.status_code}: {r.text[:200]}")
     if r.status_code != 200: raise LLMError(f"{r.status_code}: {r.text[:200]}")
 
+    # Tool-call defragmentation buffer (HIGH-2). Keyed by the delta's `index` so
+    # fragments of the same call merge; insertion order is preserved so we can
+    # emit ordered-by-index at the end. Each value is the OpenAI tool-call shape.
+    tc_buffer: dict[int, dict] = {}
+    tool_calls_emitted = False
+
+    def _accumulate_tool_call_deltas(deltas: list) -> None:
+        for d in deltas or []:
+            if not isinstance(d, dict):
+                continue
+            idx = d.get("index")
+            if idx is None:
+                # Some providers omit index when there is a single tool call;
+                # fold everything into slot 0 in that case.
+                idx = 0
+            slot = tc_buffer.get(idx)
+            if slot is None:
+                slot = {"id": None, "type": "function",
+                        "function": {"name": None, "arguments": ""}}
+                tc_buffer[idx] = slot
+            if d.get("id"):
+                slot["id"] = d["id"]
+            if d.get("type"):
+                slot["type"] = d["type"]
+            fn = d.get("function") or {}
+            if fn.get("name"):
+                slot["function"]["name"] = fn["name"]
+            frag = fn.get("arguments")
+            if frag:
+                slot["function"]["arguments"] += frag
+
+    def _assembled_tool_calls() -> list | None:
+        if not tc_buffer:
+            return None
+        out_calls: list[dict] = []
+        for idx in sorted(tc_buffer):
+            slot = tc_buffer[idx]
+            out_calls.append({
+                "id": slot.get("id") or "",
+                "type": slot.get("type") or "function",
+                "function": {
+                    "name": slot["function"].get("name") or "",
+                    "arguments": slot["function"].get("arguments") or "",
+                },
+            })
+        return out_calls
+
     try:
         for raw_line in r.iter_lines(decode_unicode=True):
             if abort_event.is_set():
@@ -189,6 +245,14 @@ def chat_stream(
                 continue
             data = raw_line[len("data:"):].strip()
             if data == "[DONE]":
+                # Stream end without an explicit finish_reason chunk carrying the
+                # tool_calls — flush any buffered (assembled) calls now so the
+                # caller still receives complete tool calls (once).
+                if not tool_calls_emitted:
+                    assembled = _assembled_tool_calls()
+                    if assembled:
+                        tool_calls_emitted = True
+                        yield (None, "tool_calls", None, assembled)
                 return
             try:
                 obj = json.loads(data)
@@ -199,9 +263,19 @@ def chat_stream(
             chunk = delta.get("content") or ""
             finish = choice.get("finish_reason")
             usage = obj.get("usage")
-            tool_calls = delta.get("tool_calls")
-            if chunk or finish or usage or tool_calls:
-                yield (chunk if chunk else None, finish, usage, tool_calls)
+            # Accumulate tool-call fragments; do NOT surface them yet. They are
+            # emitted COMPLETE on the terminal chunk below.
+            _accumulate_tool_call_deltas(delta.get("tool_calls"))
+            # The terminal chunk (finish_reason present) is where we surface the
+            # fully-assembled tool calls — exactly once. For text-only streams
+            # `assembled` is None, preserving the prior contract.
+            assembled = None
+            if finish and not tool_calls_emitted:
+                assembled = _assembled_tool_calls()
+                if assembled:
+                    tool_calls_emitted = True
+            if chunk or finish or usage or assembled:
+                yield (chunk if chunk else None, finish, usage, assembled)
     finally:
         try: r.raw.close()
         except Exception: pass

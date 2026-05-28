@@ -215,11 +215,16 @@ CHAT_ALLOWED_TOOLS: set[str] = {
     "get_kodi_setting", "get_addon_setting",
     "kodi_jsonrpc",          # read-only allowlist enforced inside the tool
     "verify_fix",            # read-only verifier
-    # reversible mutations (each gated by the confirm-gate before it runs)
-    "set_kodi_setting",
-    "enable_addon", "disable_addon",
-    "set_addon_setting",
-    "restart_addon",
+    # Reversible mutations. NOT all of these pause for approval: per spec §1.9
+    # the confirm-gate only stops tier=confirm tools (set_kodi_setting,
+    # disable_addon) OR an immediate tool whose disruptive(args) is True.
+    # tier=immediate, non-disruptive mutations (enable_addon, restart_addon)
+    # apply DIRECTLY without a confirm prompt — they're reversible and safe.
+    "set_kodi_setting",      # tier=confirm  -> pauses for [Yes]/[No]
+    "enable_addon",          # tier=immediate -> applies directly
+    "disable_addon",         # tier=confirm  -> pauses for [Yes]/[No]
+    "set_addon_setting",     # tier=confirm  -> pauses for [Yes]/[No]
+    "restart_addon",         # tier=immediate -> applies directly
     # ask_user stays available so the chat agent can ask clarifying questions
     "ask_user",
 }
@@ -301,12 +306,27 @@ def _handle_incident(incident: LogIncident, bot_holder: BotHolder) -> None:
     # Bracket the reasoner run as an active session so a CONCURRENT incident's
     # detect notification is suppressed (dedupe checks active-session count).
     # finally: ensures the bracket always closes even if the reasoner raises.
+    #
+    # LOW-4: run_with_tools already maps INTERNAL stream/dispatch failures to an
+    # "error" outcome, but a crash OUTSIDE its try (schema build, router.pick, an
+    # unexpected bug) would propagate and leave the user hanging after the
+    # "detected" toast. Catch any such crash here and synthesize an "error"
+    # outcome so _handle_outcome STILL fires the resolution notification (reusing
+    # the v0.5.0 notify_user error path). The exception is redacted into notes
+    # (it can carry response bodies / keys). We re-raise nothing — the user
+    # always gets a resolution.
     notifier.session_started()
     try:
         outcome = r.run_with_tools(
             initial_messages=msgs,
             task_class="t2_reason",
             session_id=session_id,
+        )
+    except Exception as e:
+        outcome = reasoner_mod.ReasonerOutcome(
+            final_message="",
+            terminal_reason="error",
+            notes=redactor.redact(f"reasoner crashed: {e!r}"),
         )
     finally:
         notifier.session_ended()
@@ -465,10 +485,17 @@ def _handle_outcome(outcome, bot, session_id: str, cluster_id, target_chat_id=No
                 }
                 tool_name = outcome.pending_tool or "unknown"
                 tool_args = outcome.pending_args or "{}"
+                # HIGH-1: redact BEFORE escape. The pending tool's args can carry
+                # a secret the model proposed to write (e.g.
+                # set_addon_setting(value=<token>)); the sibling final_message /
+                # error paths already redact, but this confirm prompt did not, so
+                # tapping through a secret-bearing mutation leaked it verbatim to
+                # Telegram (egress, spec §5.7). Redact the secret first, then
+                # HTML-escape for the parse_mode=HTML send (spec §4.5).
                 res = bot.send_message(
                     chat_ids[0],
-                    f"<b>Confirm tool:</b> {tg_fmt.escape_html(tool_name)}\n\n"
-                    f"<code>{tg_fmt.escape_html(tool_args)}</code>",
+                    f"<b>Confirm tool:</b> {tg_fmt.escape_html(redactor.redact(tool_name))}\n\n"
+                    f"<code>{tg_fmt.escape_html(redactor.redact(tool_args))}</code>",
                     reply_markup=kb,
                 )
                 return bool(res.get("ok"))

@@ -86,6 +86,44 @@ def test_reasoner_confirm_tier_tool_pauses_not_executes():
     assert len(out.messages_so_far) >= 1
 
 
+def test_reasoner_tool_with_none_tier_is_gated_fail_closed():
+    """LOW-1/LOW-2 (fail-closed): a registered tool whose .tier is None (missing
+    / malformed — should never happen for a real @tool fn, but defensive) must be
+    treated as needs-confirmation and PAUSE, not silently execute. The gate fails
+    SAFE: an unknown safety classification is presumed dangerous."""
+    from lib.reasoner import Reasoner
+
+    fake_llm = mock.MagicMock()
+    fake_llm.chat_stream.side_effect = [
+        FakeStream([
+            ("", "tool_calls", {"prompt_tokens": 10, "completion_tokens": 5},
+             [{"id": "tc1", "function": {"name": "mystery_tool",
+                                          "arguments": '{"x": 1}'}}]),
+        ]),
+    ]
+    # A tool object with an explicit tier=None and no requires_user_confirmation.
+    none_tier_tool = mock.MagicMock(return_value=mock.MagicMock(
+        success=True, output="ran", actual_state_after=None,
+        snapshot_id=None, error=None, requested="mystery_tool(...)"))
+    none_tier_tool.tier = None
+    none_tier_tool.disruptive_fn = lambda args: False
+    none_tier_tool.target_addons_fn = lambda args: set()
+    none_tier_tool.snapshot_targets_fn = None
+    none_tier_tool.requires_user_confirmation = False
+
+    r = Reasoner(
+        llm_client=fake_llm, api_key="k", router=_router(), budget=_budget(),
+        tool_registry={"mystery_tool": none_tier_tool},
+    )
+    out = r.run_with_tools(
+        initial_messages=[], task_class="t2_reason", session_id="s1", max_turns=5,
+    )
+    # Gated, not executed.
+    assert out.terminal_reason == "needs_user"
+    assert out.pending_tool == "mystery_tool"
+    assert not none_tier_tool.called
+
+
 def test_reasoner_disruptive_immediate_tool_pauses_not_executes():
     """A tier=immediate tool whose disruptive(args) is True → also pauses."""
     from lib.reasoner import Reasoner
