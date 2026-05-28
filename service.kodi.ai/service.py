@@ -402,11 +402,14 @@ def _handle_outcome(outcome, bot, session_id: str, cluster_id, target_chat_id=No
     # final_message and a bot). Chat replies never emit incident-style toasts.
     if not is_incident:
         if outcome.final_message and bot is not None:
+            # Redact BEFORE escape: a tool may have surfaced secret-bearing
+            # content that the model echoed into final_message (egress, §5.7).
+            safe = tg_fmt.truncate(
+                tg_fmt.escape_html(redactor.redact(outcome.final_message))
+            )
             for cid in chat_ids:
                 try:
-                    bot.send_message(
-                        cid, tg_fmt.truncate(tg_fmt.escape_html(outcome.final_message))
-                    )
+                    bot.send_message(cid, safe)
                 except Exception:
                     pass
         return
@@ -420,10 +423,12 @@ def _handle_outcome(outcome, bot, session_id: str, cluster_id, target_chat_id=No
         return
 
     final = (outcome.final_message or "").strip()
-    # Dynamic fragments are HTML-escaped before interpolation: the Telegram bot
-    # sends parse_mode=HTML, so unescaped </&/< in final_message or notes would
-    # trigger a Telegram parse error and the resolution would be lost (spec §4.5).
-    final_safe = tg_fmt.escape_html(final)
+    # Redact BEFORE escape: a tool may have surfaced secret-bearing content that
+    # the model echoed into final_message (egress hardening, spec §5.7). Then
+    # HTML-escape: the bot sends parse_mode=HTML, so unescaped </&/< in
+    # final_message or notes would trigger a Telegram parse error and the
+    # resolution would be lost (spec §4.5).
+    final_safe = tg_fmt.escape_html(redactor.redact(final))
 
     if reason == "complete":
         # The agent may "complete" with a fix OR an advisory it couldn't fix

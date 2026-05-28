@@ -150,6 +150,34 @@ def test_handle_incident_critical_fires_detect_notification(
     assert "outcome" in order
 
 
+def test_handle_incident_releases_session_counter_when_reasoner_raises(
+    setup_paths, stub_xbmcgui, capture_notify, monkeypatch,
+):
+    """Load-bearing: if the reasoner raises, the try/finally MUST release the
+    active-session counter. A leak would leave _active_sessions > 0 forever,
+    and detect_dedupe_check_and_arm() suppresses ALL future detects while a
+    session is 'active' — i.e. one crash would permanently silence the addon."""
+    import service
+    from lib import secrets, notifier
+    secrets.set_secret("openrouter_key", "sk-or-test")
+    monkeypatch.setattr(service.triage, "classify", lambda *a, **k: "CRITICAL")
+
+    def fake_get_reasoner(api_key):
+        fake = mock.MagicMock()
+        fake.run_with_tools.side_effect = RuntimeError("boom in the reasoner")
+        return fake
+
+    monkeypatch.setattr(service, "_get_reasoner", fake_get_reasoner)
+    holder = mock.MagicMock()
+    holder.get.return_value = None
+
+    assert notifier._active_sessions == 0
+    with pytest.raises(RuntimeError):
+        service._handle_incident(_incident(), holder)
+    # The finally block must have run despite the exception.
+    assert notifier._active_sessions == 0
+
+
 def test_handle_incident_non_critical_no_notification(
     setup_paths, stub_xbmcgui, capture_notify, monkeypatch,
 ):
