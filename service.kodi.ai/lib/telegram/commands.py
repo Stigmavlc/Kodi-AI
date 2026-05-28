@@ -1,43 +1,202 @@
 """V1 Telegram commands. PRAGMATIC: core informational + control commands.
 Advanced commands (undo, panic, etc.) stubbed for V1.
 
+These handlers read/write REAL state:
+- secrets (configured yes/no — never the values),
+- settings (mode + budget caps),
+- the persisted BudgetGuard counters (today's / month's spend),
+- the audit log tail (best-effort "last action").
+
+They deliberately avoid importing service.py (which imports lib.telegram,
+so the reverse import would be a cycle). State is read straight from the
+underlying modules instead. The one cross-module concern — making a /mode
+change take effect on a running service without a restart — is handled
+inside service._get_router(), which rebuilds the cached router whenever the
+persisted mode no longer matches; this handler just persists the new mode.
+
 Spec §5.7.
 """
 from __future__ import annotations
 from . import auth
+from . import formatters as fmt
+from .. import settings, secrets
 
 
 def cmd_help(bot, chat_id, args_text):
     text = (
         "<b>Kodi-AI commands</b>\n"
         "/help — this message\n"
-        "/status — current status, budget, last fixes\n"
+        "/status — current status, config, budget, last action\n"
         "/secret — show current setup_secret\n"
-        "/budget — show / raise budget\n"
-        "/mode auto|manual — agent mode\n"
+        "/budget — show budget caps + spend\n"
+        "/mode auto|manual — set + persist agent mode\n"
         "/audit [count] — recent audit entries\n"
         "/undo — undo last fix (V1)\n"
         "/pause — pause agent (V1)\n"
         "/resume — resume agent (V1)\n"
-        "/disable, /enable — disable/enable agent\n"
+        "/disable, /enable — disable/enable agent (V1)\n"
         "/panic — restore all snapshots (V1)\n"
     )
     bot.send_message(chat_id, text)
 
 
+def _load_budget():
+    """Build a BudgetGuard from the configured caps and load the persisted
+    counters. Returns the guard, or None if it can't be read (caller treats
+    that as 'no spend data')."""
+    try:
+        from ..llm.budget import BudgetGuard
+        bg = BudgetGuard(
+            per_incident_cap=settings.get_float("per_incident_cap_usd", 0.50),
+            daily_cap=settings.get_float("daily_cap_usd", 5.0),
+            monthly_cap=settings.get_float("monthly_cap_usd", 30.0),
+        )
+        bg.load()  # no-op when budget_counters.json is absent
+        return bg
+    except Exception:
+        return None
+
+
+def _last_action_line():
+    """Best-effort: most recent meaningful audit entry as a short string, or
+    None. Reuses the tail-read pattern from cmd_audit. Never raises."""
+    try:
+        from .. import state_paths
+        import os, json
+        path = state_paths.profile_path("audit/audit.jsonl")
+        if not os.path.exists(path):
+            return None
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 8192))
+            tail = f.read().decode("utf-8", errors="replace")
+        for line in reversed(tail.splitlines()):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            event = rec.get("event", "")
+            # Skip pure noise; surface actionable events.
+            if event in ("heartbeat",):
+                continue
+            ts = rec.get("ts", "")
+            detail = ""
+            d = rec.get("details") or {}
+            if event == "tool_call":
+                detail = f" {d.get('tool_name', '')}"
+            return f"{event}{detail} @ {ts}"
+        return None
+    except Exception:
+        return None
+
+
 def cmd_status(bot, chat_id, args_text):
-    bot.send_message(chat_id, "<b>Kodi-AI status:</b> running. (Detailed status: V2)")
+    """Report REAL state. Never leaks secret values — only configured yes/no."""
+    try:
+        has_token = bool(secrets.get_secret("bot_token"))
+        has_key = bool(secrets.get_secret("openrouter_key"))
+        mode = settings.get_string("mode", "auto") or "auto"
+        try:
+            paired = len(auth.chat_allowlist())
+        except Exception:
+            paired = 0
+        username = settings.get_string("bot_username", "") or ""
+
+        bg = _load_budget()
+        if bg is not None:
+            spent_today = bg.daily_cost_usd
+            daily_cap = bg.daily_cap
+        else:
+            spent_today = 0.0
+            daily_cap = settings.get_float("daily_cap_usd", 5.0)
+
+        lines = ["<b>Kodi-AI status</b>"]
+        lines.append(
+            f"Configured: bot token: {'yes' if has_token else 'no'}, "
+            f"OpenRouter key: {'yes' if has_key else 'no'}"
+        )
+        if username:
+            lines.append(f"Bot: @{fmt.escape_html(username)}")
+        lines.append(f"Paired users: {paired}")
+        lines.append(f"Mode: {fmt.escape_html(mode)}")
+        lines.append(f"Spent today: ${spent_today:.2f} / ${daily_cap:.2f}")
+        last = _last_action_line()
+        if last:
+            lines.append(f"Last action: {fmt.escape_html(last)}")
+        bot.send_message(chat_id, "\n".join(lines))
+    except Exception as e:
+        # Status must always answer, even if a data source is broken.
+        bot.send_message(chat_id, f"<b>Kodi-AI status:</b> error reading state: {e}")
 
 
 def cmd_budget(bot, chat_id, args_text):
-    bot.send_message(chat_id, "<b>Budget:</b> per_incident=$0.50, daily=$5, monthly=$30")
+    """Show REAL caps + spend. Optional: '/budget daily <n>' raises the daily
+    cap (V1 convenience; per_incident/monthly stay UI-only)."""
+    arg = (args_text or "").strip()
+
+    # Optional: '/budget daily <n>' — set the daily cap.
+    if arg:
+        parts = arg.split()
+        if len(parts) == 2 and parts[0].lower() == "daily":
+            try:
+                new_cap = float(parts[1])
+            except ValueError:
+                bot.send_message(chat_id, "Usage: /budget daily &lt;amount&gt;")
+                return
+            if new_cap <= 0:
+                bot.send_message(chat_id, "Daily cap must be a positive number.")
+                return
+            settings.set_float("daily_cap_usd", new_cap)
+            settings.invalidate_cache()
+            bot.send_message(
+                chat_id,
+                f"Daily cap set to ${new_cap:.2f}. "
+                f"Takes effect on the next incident.",
+            )
+            return
+        # Any other args → fall through to showing current budget.
+
+    per_incident = settings.get_float("per_incident_cap_usd", 0.50)
+    daily = settings.get_float("daily_cap_usd", 5.0)
+    monthly = settings.get_float("monthly_cap_usd", 30.0)
+
+    bg = _load_budget()
+    spent_today = bg.daily_cost_usd if bg is not None else 0.0
+    spent_month = bg.monthly_cost_usd if bg is not None else 0.0
+
+    text = (
+        "<b>Budget</b>\n"
+        f"Per incident cap: ${per_incident:.2f}\n"
+        f"Today: ${spent_today:.2f} / ${daily:.2f}\n"
+        f"This month: ${spent_month:.2f} / ${monthly:.2f}"
+    )
+    bot.send_message(chat_id, text)
 
 
 def cmd_mode(bot, chat_id, args_text):
-    if args_text.strip() in ("auto", "manual"):
-        bot.send_message(chat_id, f"Mode set to: {args_text.strip()}")
+    """Persist the agent mode so it survives + applies to the next incident.
+
+    service._get_router() re-reads `mode` and rebuilds its cached router when
+    the value changes, so no Kodi restart is needed for the new mode to take
+    effect on the next incident handled by the running service."""
+    value = (args_text or "").strip().lower()
+    if value in ("auto", "manual"):
+        settings.set_string("mode", value)
+        settings.invalidate_cache()
+        bot.send_message(
+            chat_id,
+            f"Mode set to {value}. Takes effect on the next incident.",
+        )
     else:
-        bot.send_message(chat_id, "Usage: /mode auto|manual")
+        current = settings.get_string("mode", "auto") or "auto"
+        bot.send_message(
+            chat_id,
+            f"Usage: /mode auto|manual\nCurrent: {fmt.escape_html(current)}",
+        )
 
 
 def cmd_secret(bot, chat_id, args_text):

@@ -57,6 +57,12 @@ def set_string(key: str, value: str) -> None:
         _cache[key] = value
 
 
+def set_float(key: str, value: float) -> None:
+    """Persist a float setting. Kodi settings are strings, so store the str
+    form and keep the cache consistent with what a subsequent get_float reads."""
+    set_string(key, str(value))
+
+
 def invalidate_cache() -> None:
     with _lock:
         _cache.clear()

@@ -791,3 +791,33 @@ def test_set_token_and_start_same_token_idempotent(
     assert len(started_threads) == 1
     # No "restart" notification.
     assert not any("restart" in n.lower() for n in notifications)
+
+
+# ---- /mode live-effect: _get_router rebuilds when cached mode is stale ----
+
+
+def test_router_rebuilds_on_mode_change(setup_paths, fake_xbmcaddon, monkeypatch):
+    """_get_router() must rebuild the cached router when the persisted `mode`
+    setting no longer matches the cached router's mode. This is what makes a
+    Telegram /mode change take effect on the NEXT incident without a Kodi
+    restart (the bot persists mode via settings; service re-reads it here)."""
+    import service
+    # Isolate from any prior test that built a router singleton.
+    monkeypatch.setattr(service, "_router_instance", None)
+
+    from lib import settings
+    fake_xbmcaddon["mode"] = "auto"
+    settings.invalidate_cache()
+
+    r1 = service._get_router()
+    assert r1.mode == "auto"
+    # Same mode → same cached instance (no needless rebuild).
+    assert service._get_router() is r1
+
+    # Simulate a /mode manual command persisting the new mode.
+    fake_xbmcaddon["mode"] = "manual"
+    settings.invalidate_cache()
+
+    r2 = service._get_router()
+    assert r2.mode == "manual"
+    assert r2 is not r1  # rebuilt

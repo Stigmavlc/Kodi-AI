@@ -74,13 +74,29 @@ _budget_instance = None
 
 
 def _get_router():
+    """Return the cached router, rebuilding it when the persisted mode (or
+    manual_model) has changed since it was built.
+
+    Live /mode effect: the Telegram bot's `/mode` command persists the new
+    mode via settings.set_string + invalidate_cache, but the bot can't reach
+    this in-memory singleton (and importing service.py from lib.telegram would
+    be a cycle). So instead of the bot pushing a change in, we pull: each call
+    re-reads `mode` (cheap - settings is cached) and rebuilds when the cached
+    router's mode no longer matches. The new mode therefore applies to the
+    NEXT incident/chat handled by the running service, with no Kodi restart.
+    """
     global _router_instance
-    if _router_instance is None:
-        mode = settings.get_string("mode", "auto") or "auto"
-        manual_model = settings.get_string("manual_model", "")
+    mode = settings.get_string("mode", "auto") or "auto"
+    mode = mode if mode in ("auto", "manual") else "auto"
+    manual_model = settings.get_string("manual_model", "")
+    if (
+        _router_instance is None
+        or _router_instance.mode != mode
+        or _router_instance.manual_model != manual_model
+    ):
         override = settings.get_string("models_override", "")
         _router_instance = llm_router_mod.TaskModelRouter(
-            mode=mode if mode in ("auto", "manual") else "auto",
+            mode=mode,
             manual_model=manual_model,
             user_override_json=override,
         )
