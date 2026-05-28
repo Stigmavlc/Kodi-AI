@@ -4,6 +4,51 @@ All notable changes to Kodi-AI are documented here. The project follows
 [Semantic Versioning](https://semver.org/) (with V1 being a personal-use
 release).
 
+## [0.4.1] — 2026-05-28
+
+Fix release for the v0.4.0 device-code relay (review findings).
+
+### Fixed
+
+- **Bot never started after phone setup on a fresh install (BLOCKER).** The
+  setup runs in the `default.py` SCRIPT process, which writes `bot_token` to
+  `secrets.json` on disk and bumps the `_pairing_nudge` setting. The SERVICE
+  process had cached an empty secrets dict at boot (`{}` is `not None`, so the
+  cache never re-read disk), so the cross-process write was invisible and T3
+  (the Telegram bot) only started after a full Kodi restart. The pairing-nudge
+  branch in `service.py` now calls `lib_secrets.invalidate_cache()` before
+  reading the token. This also refreshes a stale `openrouter_key` for the first
+  reasoner/chat handler after setup.
+- **Worker idempotent re-submit was dead code (HIGH).** `/api/submit` deleted
+  the `uc:<user_code>` mapping on first success, so a phone double-tap / retry
+  returned `code_expired` even though setup succeeded. The mapping is now left
+  to expire on its TTL; a repeat submit of an already-ready session returns the
+  same `{ok:true}` success. The per-code submit cap still bounds abuse.
+
+### Changed
+
+- **Non-billable OpenRouter key validation.** The Worker's phone-side preflight
+  now validates via `GET https://openrouter.ai/api/v1/key` (free, no model
+  dependency) instead of a billable chat completion against a hardcoded model
+  that could be retired. A present, non-positive `limit_remaining` maps to
+  `no_credit`. (The Kodi-side validation in `lib/llm/client.py` is unchanged.)
+- **Worker request-body size guard.** `readJsonBody` rejects requests whose
+  `Content-Length` exceeds 16 KB before buffering.
+
+### Docs
+
+- `PRIVACY.md`: corrected the OpenRouter host (`api.openrouter.ai` →
+  `openrouter.ai`).
+- `cloudflare/test.http`: added an idempotent double-submit case; updated the
+  OpenRouter validation note.
+
+### Tests
+
+- `tests/unit/test_settings_changed_handler.py` (+1): cross-process regression
+  test that writes `secrets.json` directly on disk and asserts T3 starts — fails
+  without the cache-invalidation fix, passes with it.
+- Suite: 296 → 297 passing.
+
 ## [0.4.0] — 2026-05-28
 
 Device-code setup. Replaces TV-keyboard token entry with an
@@ -20,8 +65,9 @@ Worker the user deploys on their own free account.
   `/api/validate-telegram` + `/api/validate-openrouter` (server-side
   validation with generic errors that never echo upstream bodies),
   `/api/submit` (per-code submit cap, idempotent double-submit, ready payload
-  TTL 120s, one-time user_code). Secrets transit KV transiently (≤2 min TTL)
-  and are never logged. Inline self-contained mobile page (dark + cyan).
+  TTL 120s; user_code expires on TTL — see 0.4.1). Secrets transit KV
+  transiently (≤2 min TTL) and are never logged. Inline self-contained mobile
+  page (dark + cyan).
 - **`cloudflare/wrangler.toml`**, **`cloudflare/DEPLOY.md`** (step-by-step +
   free-tier limits), **`cloudflare/test.http`** (manual curl smoke tests; the
   Worker is not in the Python test gate).

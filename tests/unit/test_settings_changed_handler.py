@@ -650,6 +650,70 @@ def test_pairing_nudge_starts_t3_from_secrets(
     assert state["last_pairing_nudge"] == "1234567890.5"
 
 
+def test_pairing_nudge_reads_token_written_cross_process(
+    setup_paths, fake_xbmcaddon, stub_xbmcgui, stub_bot_holder, monkeypatch,
+):
+    """B1 — REGRESSION (cross-process). The SCRIPT process (default.py)
+    writes bot_token to secrets.json DIRECTLY ON DISK, then bumps the
+    _pairing_nudge setting. The SERVICE process cached an EMPTY secrets
+    dict at boot ({} is `not None`, so secrets._load() never re-reads
+    disk). Without invalidate_cache() in the nudge branch, get_secret()
+    returns None -> token == "" -> T3 (the bot) never starts on a fresh
+    install via "Set up via phone".
+
+    This test MUST exercise the real cross-process boundary: it writes
+    secrets.json on disk WITHOUT calling secrets.set_secret() in-process
+    (set_secret repopulates the service cache and would mask the bug),
+    and primes the service-side cache to {} as it is at boot.
+
+    Fails without the lib_secrets.invalidate_cache() fix; passes with it.
+    """
+    import json as _json
+    from lib import secrets, state_paths
+
+    # 1. Prime the SERVICE-side cache to an EMPTY dict, exactly as it is
+    #    after boot (no secrets existed when the service started). `{}` is
+    #    `not None`, so _load() will short-circuit and never re-read disk.
+    secrets.invalidate_cache()
+    assert secrets.get_secret("bot_token") is None  # cache now == {}
+
+    # 2. The SCRIPT process writes secrets.json straight to disk. We do NOT
+    #    use secrets.set_secret() — that would repopulate the in-process
+    #    cache and hide the staleness bug we are testing for.
+    secrets_path = state_paths.profile_path("secrets.json")
+    os.makedirs(os.path.dirname(secrets_path), exist_ok=True)
+    with open(secrets_path, "w", encoding="utf-8") as f:
+        _json.dump({"bot_token": "12345:cross_process_token"}, f)
+
+    # Sanity: the stale cache still returns None despite the disk write.
+    assert secrets.get_secret("bot_token") is None, (
+        "precondition: service cache must be stale before the handler runs"
+    )
+
+    # 3. The script process bumps the nudge setting.
+    fake_xbmcaddon["_pairing_nudge"] = "9999999999.9"
+    holder, started = stub_bot_holder
+    state = {"last_known_bot_token": "", "last_pairing_nudge": ""}
+
+    # The nudge path must NOT call Telegram getMe.
+    import requests
+    called = []
+    monkeypatch.setattr(requests, "get", lambda *a, **kw: (
+        called.append(True), mock.MagicMock(status_code=200, json=lambda: {})
+    )[1])
+
+    import service
+    service._handle_settings_changed(holder, state)
+
+    # 4. T3 must have started with the token written cross-process.
+    assert started == ["12345:cross_process_token"], (
+        "B1 regression: nudge handler must invalidate the secrets cache so "
+        "it sees the cross-process disk write and starts T3"
+    )
+    assert called == [], "nudge path must NOT call Telegram getMe"
+    assert state["last_pairing_nudge"] == "9999999999.9"
+
+
 def test_pairing_nudge_debounced_on_repeat(
     setup_paths, fake_xbmcaddon, stub_xbmcgui, stub_bot_holder, monkeypatch,
 ):

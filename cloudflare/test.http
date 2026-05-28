@@ -39,7 +39,8 @@ curl -s -X POST "$BASE/api/validate-telegram" \
 echo
 
 # ---------------------------------------------------------------------------
-# 4. Phone validates the OpenRouter key (1-token ping). Response:
+# 4. Phone validates the OpenRouter key (free GET /api/v1/key — non-billable,
+#    no model dependency). Response:
 #    { "ok": true } | { "ok": false, "error": "invalid_key" | "no_credit" }.
 # ---------------------------------------------------------------------------
 curl -s -X POST "$BASE/api/validate-openrouter" \
@@ -59,6 +60,19 @@ echo
 # ---------------------------------------------------------------------------
 # 6. Phone submits everything. Response:
 #    { "ok": true, "bot_username": "...", "pair_url": "https://t.me/...?start=..." }
+# ---------------------------------------------------------------------------
+curl -s -X POST "$BASE/api/submit" \
+  -H "Content-Type: application/json" \
+  -d '{"user_code":"<USER_CODE_FROM_STEP_1>","bot_token":"123456:REAL","openrouter_key":"sk-or-REAL","mode":"auto"}'
+echo
+
+# ---------------------------------------------------------------------------
+# 6b. Idempotent re-submit (H1). Submit the SAME user_code + SAME bot token
+#     a SECOND time BEFORE Kodi polls. Because the user_code mapping is NOT
+#     deleted on success (it expires on TTL), the Worker resolves the now-
+#     "ready" session and returns the SAME success again — a phone double-tap
+#     / network retry must NOT see "code_expired".
+#     Response (both times): { "ok": true, "bot_username": "...", "pair_url": ... }
 # ---------------------------------------------------------------------------
 curl -s -X POST "$BASE/api/submit" \
   -H "Content-Type: application/json" \

@@ -14,8 +14,10 @@
  *      on their phone, types the user_code, fills the form (bot token,
  *      OpenRouter key, mode), and submits.
  *   3. The phone POSTs /api/submit. The Worker re-validates the bot token to
- *      capture the bot @username, marks the session "ready" (TTL 120s), and
- *      deletes the user_code mapping (one-time).
+ *      capture the bot @username and marks the session "ready" (TTL 120s).
+ *      The user_code mapping is left to expire on its own TTL (not deleted)
+ *      so an idempotent re-submit (double-tap / retry) can still resolve it
+ *      and return the same success; the per-code submit cap bounds abuse.
  *   4. Kodi long-polls /api/device/poll (device_code in the Authorization
  *      header, NOT the URL) until it sees "ready", reads the payload, and the
  *      Worker tombstones the KV key on read.
@@ -33,7 +35,8 @@
  *
  * KV namespace binding: KODI_AI_SESSIONS
  *   dc:<device_code>  -> JSON session  (pending | ready | consumed)
- *   uc:<user_code>    -> device_code   (one-time lookup, deleted on submit)
+ *   uc:<user_code>    -> device_code   (lookup; expires on TTL, kept after
+ *                                        submit so re-submits stay idempotent)
  *   submitcount:<user_code> -> stringified int (per-code submit attempt cap)
  */
 
@@ -44,8 +47,6 @@ const SESSION_TTL_S = 300; // pending session lifetime
 const READY_TTL_S = 120; // ready payload lifetime (short — secrets inside)
 const TOMBSTONE_TTL_S = 60; // consumed marker after Kodi reads the payload
 const MAX_SUBMIT_ATTEMPTS = 5; // per user_code
-
-const OPENROUTER_VALIDATE_MODEL = "google/gemini-2.0-flash-001";
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -98,7 +99,20 @@ function normalizeUserCode(input) {
   return s.slice(0, 4) + "-" + s.slice(4);
 }
 
+// M2 — reject oversized bodies before buffering. Every legitimate request
+// here is a tiny JSON object (a code, a token, a key); a 16 KB cap is
+// generous and prevents a large-body upload from wasting free-tier
+// CPU/memory. Callers map a null return to a bad_request response.
+const MAX_BODY_BYTES = 16384;
+
 async function readJsonBody(request) {
+  const lenHeader = request.headers.get("Content-Length");
+  if (lenHeader) {
+    const len = parseInt(lenHeader, 10);
+    if (Number.isFinite(len) && len > MAX_BODY_BYTES) {
+      return null;
+    }
+  }
   try {
     return await request.json();
   } catch {
@@ -148,8 +162,12 @@ async function validateTelegram(botToken) {
 }
 
 /**
- * Validate an OpenRouter key with a 1-token ping. Maps status codes to fixed
- * error strings. The key is NEVER logged.
+ * Validate an OpenRouter key via GET /api/v1/key. The key is NEVER logged.
+ *
+ * M3 — This replaces the old billable 1-token chat completion (which also
+ * pinned a hardcoded model that could be retired, breaking all validations).
+ * GET /api/v1/key is free, generates nothing, and has no model dependency.
+ * It returns the key's metadata (incl. limit/usage) when the key is valid.
  */
 async function validateOpenRouter(apiKey) {
   if (typeof apiKey !== "string" || !apiKey.trim()) {
@@ -157,24 +175,34 @@ async function validateOpenRouter(apiKey) {
   }
   let resp;
   try {
-    resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: "Bearer " + apiKey.trim(),
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: OPENROUTER_VALIDATE_MODEL,
-        max_tokens: 1,
-        messages: [{ role: "user", content: "ping" }],
-      }),
+    resp = await fetch("https://openrouter.ai/api/v1/key", {
+      method: "GET",
+      headers: { Authorization: "Bearer " + apiKey.trim() },
     });
   } catch {
     return { ok: false, error: "validation_failed" };
   }
   if (resp.status === 401) return { ok: false, error: "invalid_key" };
-  if (resp.status === 402) return { ok: false, error: "no_credit" };
-  if (resp.status >= 200 && resp.status < 300) return { ok: true };
+  if (resp.status >= 200 && resp.status < 300) {
+    // Best-effort: inspect remaining credit if OpenRouter reports it. A
+    // present-and-non-positive limit_remaining means the key is valid but
+    // exhausted — surface no_credit so the phone tells the user to top up.
+    try {
+      const body = await resp.json();
+      const data = body && body.data;
+      if (
+        data &&
+        typeof data.limit_remaining === "number" &&
+        data.limit_remaining <= 0
+      ) {
+        return { ok: false, error: "no_credit" };
+      }
+    } catch {
+      // Body parse failure on a 2xx — treat the key as valid; the Kodi-side
+      // validation (lib/llm/client.py) is the authoritative check anyway.
+    }
+    return { ok: true };
+  }
   return { ok: false, error: "validation_failed" };
 }
 
@@ -236,8 +264,10 @@ async function handleValidateOpenRouter(request, env) {
  *
  * - Per-user_code attempt cap (>5 deletes the session, returns too_many_attempts).
  * - Idempotent: a repeated submit that matches an already-ready session returns
- *   the same success without re-validating.
- * - On success: marks session ready (TTL 120s), deletes the user_code mapping.
+ *   the same success without re-validating (the user_code mapping is kept until
+ *   its TTL so the retry can resolve the device_code).
+ * - On success: marks session ready (TTL 120s); the user_code mapping is left
+ *   to expire on its own TTL (not deleted) to keep re-submits idempotent.
  */
 async function handleSubmit(request, env) {
   const body = await readJsonBody(request);
@@ -336,8 +366,13 @@ async function handleSubmit(request, env) {
     JSON.stringify(readySession),
     { expirationTtl: READY_TTL_S }
   );
-  // One-time: the user_code can no longer be used to submit.
-  await env.KODI_AI_SESSIONS.delete("uc:" + userCode);
+  // H1 — Do NOT delete uc:<user_code> here. If we delete it, a phone
+  // double-tap or network-retry of an already-succeeded submit can no
+  // longer resolve the device_code (uc: is gone) and the idempotent
+  // re-submit branch above (session.status === "ready") becomes dead
+  // code — the retry would return code_expired even though setup worked.
+  // Instead we let uc: expire naturally via its SESSION_TTL_S. The submit
+  // cap (MAX_SUBMIT_ATTEMPTS per code) still bounds brute-force abuse.
 
   return jsonResponse({
     ok: true,

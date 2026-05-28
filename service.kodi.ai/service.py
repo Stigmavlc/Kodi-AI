@@ -410,6 +410,18 @@ def _handle_settings_changed_inner(bot_holder: BotHolder, state: dict) -> None:
         nudge = ""
     if nudge and nudge != state.get("last_pairing_nudge", ""):
         state["last_pairing_nudge"] = nudge
+        # B1 — the bot_token (and openrouter_key) were written to secrets.json
+        # on disk by the SCRIPT process (default.py). THIS (service) process
+        # cached secrets._cache at boot; since an empty dict `{}` is
+        # `not None`, secrets._load() never re-reads disk and get_secret()
+        # would return None for the cross-process write -> T3 never starts.
+        # Invalidate the whole secrets cache so the disk write is seen. This
+        # also refreshes openrouter_key for the first _handle_user_msg /
+        # _handle_incident after setup (it would otherwise read stale None).
+        try:
+            lib_secrets.invalidate_cache()
+        except Exception:
+            pass
         try:
             token = lib_secrets.get_secret("bot_token") or ""
         except Exception:
@@ -915,7 +927,7 @@ def main() -> None:
     except Exception:
         pass
     try:
-        audit_log.write("startup", details={"version": "0.4.0"})
+        audit_log.write("startup", details={"version": "0.4.1"})
     except Exception:
         pass
 

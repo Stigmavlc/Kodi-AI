@@ -3,7 +3,7 @@
 Kodi-AI is a single-user, single-device add-on. No data is ever sent to a
 server controlled by the author. The only outbound network destinations are:
 
-1. **OpenRouter** (`api.openrouter.ai`) — only with redacted log samples
+1. **OpenRouter** (`openrouter.ai`) — only with redacted log samples
    and prompt context, only when triage marks a batch as `fix-candidate`,
    only up to the user's daily budget cap.
 2. **Telegram Bot API** (`api.telegram.org`) — only via the user's own
