@@ -47,6 +47,7 @@ from lib import secrets as lib_secrets
 from lib import redactor, log_watcher, triage
 from lib import reasoner as reasoner_mod
 from lib import reasoner_state, pause_sequence
+from lib import notifier
 from lib.bot_holder import BotHolder
 from lib.setup_monitor import KodiAiMonitor, suppress_settings_changed
 from lib.concurrency import (
@@ -193,6 +194,32 @@ def _handle_incident(incident: LogIncident, bot_holder: BotHolder) -> None:
         verdict = "IGNORE"
     if verdict != "CRITICAL":
         return
+
+    # v0.5.0 — the ONE "detected" notification per incident: Kodi toast (always)
+    # + Telegram (best-effort). Fired the instant triage returns CRITICAL,
+    # BEFORE the reasoner runs, so the user knows we're on it. Deduped: a single
+    # root cause can trip several CRITICAL signatures; detect_dedupe_check_and_arm
+    # suppresses the repeats (60s window OR a session already active). The
+    # likely add-on name is a safe, non-leaky hint (no raw log lines).
+    if notifier.detect_dedupe_check_and_arm():
+        # likely_addon is a Kodi add-on ID (e.g. plugin.video.foo) — non-secret.
+        # Still escape it: the Telegram bot sends parse_mode=HTML, so any stray
+        # HTML-special char would break message parsing (spec §4.5).
+        addon_hint = (
+            f" (likely {tg_fmt.escape_html(incident.likely_addon)})"
+            if incident.likely_addon else ""
+        )
+        notifier.notify_user(
+            bot_holder.get(),
+            tg_auth.chat_allowlist(),
+            telegram_text=(
+                "I've detected an error and I'm working on it. "
+                "I'll message you when it's done." + addon_hint
+            ),
+            toast_text="Detected a problem - working on it...",
+            urgency="high",
+        )
+
     r = _get_reasoner(api_key)
     session_id = f"sess_{int(time.time() * 1000)}"
     msgs = [
@@ -207,11 +234,18 @@ def _handle_incident(incident: LogIncident, bot_holder: BotHolder) -> None:
             ),
         }
     ]
-    outcome = r.run_with_tools(
-        initial_messages=msgs,
-        task_class="t2_reason",
-        session_id=session_id,
-    )
+    # Bracket the reasoner run as an active session so a CONCURRENT incident's
+    # detect notification is suppressed (dedupe checks active-session count).
+    # finally: ensures the bracket always closes even if the reasoner raises.
+    notifier.session_started()
+    try:
+        outcome = r.run_with_tools(
+            initial_messages=msgs,
+            task_class="t2_reason",
+            session_id=session_id,
+        )
+    finally:
+        notifier.session_ended()
     _handle_outcome(outcome, bot_holder.get(), session_id, incident.cluster_id)
 
 
@@ -268,10 +302,35 @@ def _handle_resume_work(rw: ResumeWork, bot_holder: BotHolder) -> None:
 
 
 def _handle_outcome(outcome, bot, session_id: str, cluster_id, target_chat_id=None) -> None:
-    """Dispatch ReasonerOutcome terminal_reason to user-facing action."""
+    """Dispatch ReasonerOutcome terminal_reason to user-facing action.
+
+    v0.5.0 — INCIDENT-driven outcomes (target_chat_id is None) get a Kodi toast
+    + Telegram resolution message via notify_user for EVERY terminal_reason
+    (fixes the silent-hang: previously only `needs_user` was handled and the
+    rest only sent if final_message was non-empty — but budget_refused/
+    budget_truncated/max_turns/aborted/error return an EMPTY final_message, so
+    the user got nothing). CHAT replies (target_chat_id set) keep the old
+    behavior: a plain Telegram reply only, no incident-style toast spam.
+    """
     chat_ids = [target_chat_id] if target_chat_id is not None else tg_auth.chat_allowlist()
+    # True when this outcome came from a log incident (not an interactive chat
+    # reply). Only incident outcomes toast; chat replies must not toast-spam.
+    is_incident = target_chat_id is None
 
     if outcome.terminal_reason == "needs_user":
+        # v0.5.0 — incident pauses also surface an on-screen toast so the user
+        # knows to check Telegram even if they're not watching the chat. The
+        # Telegram confirm message itself is sent by the pause path below
+        # (send_telegram) — do NOT duplicate it here; this is the toast only.
+        # Chat replies don't toast (the user is already in the conversation).
+        if is_incident:
+            notifier.notify_user(
+                None,  # toast-only — no Telegram (pause path sends the confirm)
+                [],
+                telegram_text="",
+                toast_text="Action needs your OK in Telegram.",
+                urgency="high",
+            )
         if not chat_ids or bot is None:
             xbmc.log(
                 "[service.kodi.ai] needs_user but no Telegram recipient — dropping",
@@ -338,15 +397,74 @@ def _handle_outcome(outcome, bot, session_id: str, cluster_id, target_chat_id=No
             )
         return
 
-    # complete / max_turns / error / budget_refused / budget_truncated / aborted
-    if outcome.final_message and bot is not None:
-        for cid in chat_ids:
-            try:
-                bot.send_message(
-                    cid, tg_fmt.truncate(tg_fmt.escape_html(outcome.final_message))
-                )
-            except Exception:
-                pass
+    # --- Chat reply (interactive): plain Telegram message only, no toast. ---
+    # Behavior preserved exactly from pre-0.5.0 (send only when there's a
+    # final_message and a bot). Chat replies never emit incident-style toasts.
+    if not is_incident:
+        if outcome.final_message and bot is not None:
+            for cid in chat_ids:
+                try:
+                    bot.send_message(
+                        cid, tg_fmt.truncate(tg_fmt.escape_html(outcome.final_message))
+                    )
+                except Exception:
+                    pass
+        return
+
+    # --- Incident outcome: map EVERY terminal_reason to a resolution
+    # notification (Kodi toast + Telegram), so the user is never left hanging.
+    reason = outcome.terminal_reason
+
+    if reason == "aborted":
+        # Shutdown in progress — silence is correct.
+        return
+
+    final = (outcome.final_message or "").strip()
+    # Dynamic fragments are HTML-escaped before interpolation: the Telegram bot
+    # sends parse_mode=HTML, so unescaped </&/< in final_message or notes would
+    # trigger a Telegram parse error and the resolution would be lost (spec §4.5).
+    final_safe = tg_fmt.escape_html(final)
+
+    if reason == "complete":
+        # The agent may "complete" with a fix OR an advisory it couldn't fix
+        # within scope; use final_message verbatim as the body when present so
+        # the phrasing stays accurate either way.
+        toast_text = "Fixed - please try again."
+        if final_safe:
+            telegram_text = f"Done - {final_safe}. Please try again."
+        else:
+            telegram_text = "Done - fixed the issue. Please try again."
+    elif reason == "max_turns":
+        toast_text = "Couldn't auto-fix (step limit)."
+        telegram_text = "I couldn't fix it automatically (hit the step limit)."
+    elif reason in ("budget_refused", "budget_truncated"):
+        toast_text = "Stopped - cost cap reached."
+        telegram_text = (
+            "I stopped because the cost cap was reached. "
+            "Raise it with /budget or try again later."
+        )
+    elif reason == "error":
+        toast_text = "Couldn't auto-fix (error)."
+        telegram_text = "I hit an internal error and couldn't fix it."
+        # outcome.notes can be str(exception) → may carry secrets. Redact FIRST,
+        # then HTML-escape, before appending any detail to the user message.
+        note = (getattr(outcome, "notes", "") or "").strip()
+        if note:
+            telegram_text += f" Details: {tg_fmt.escape_html(redactor.redact(note))}"
+    else:
+        # Defensive: an unmapped terminal_reason must still resolve (never leave
+        # the user hanging). Fall back to final_message when present.
+        toast_text = "Finished."
+        telegram_text = final_safe or "I finished working on the issue."
+
+    # Telegram length cap (spec §4.5): resolution bodies can embed final_message.
+    notifier.notify_user(
+        bot,
+        chat_ids,
+        telegram_text=tg_fmt.truncate(telegram_text),
+        toast_text=toast_text,
+        urgency="medium",
+    )
 
 
 # ---- SettingsChanged handler (v0.3.0 inline-setup flow) ----
