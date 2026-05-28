@@ -821,3 +821,56 @@ def test_router_rebuilds_on_mode_change(setup_paths, fake_xbmcaddon, monkeypatch
     r2 = service._get_router()
     assert r2.mode == "manual"
     assert r2 is not r1  # rebuilt
+
+
+# ---- /budget live-effect: _get_budget applies cap changes in place (H2) ----
+
+
+def test_get_budget_applies_cap_change_in_place_preserving_spend(
+    setup_paths, fake_xbmcaddon, monkeypatch
+):
+    """H2 — a /budget daily <n> cap change must reach the running service's
+    cached BudgetGuard WITHOUT rebuilding it (which would zero the live spend
+    counters). _get_budget() re-reads caps each call and mutates them in place;
+    the same guard instance is returned and its accumulated spend survives."""
+    import service
+    # Isolate from any prior test that built a budget singleton.
+    monkeypatch.setattr(service, "_budget_instance", None)
+
+    from lib import settings
+    fake_xbmcaddon["daily_cap_usd"] = "5.00"
+    fake_xbmcaddon["per_incident_cap_usd"] = "0.50"
+    fake_xbmcaddon["monthly_cap_usd"] = "30.00"
+    settings.invalidate_cache()
+
+    bg1 = service._get_budget()
+    assert bg1.daily_cap == 5.00
+    # Simulate real spend accumulating on the live guard.
+    bg1.record_actual(1.23)
+    assert bg1.daily_cost_usd == 1.23
+
+    # Same caps → same instance, untouched.
+    assert service._get_budget() is bg1
+
+    # Simulate /budget daily 12 persisting a new cap.
+    fake_xbmcaddon["daily_cap_usd"] = "12.00"
+    settings.invalidate_cache()
+
+    bg2 = service._get_budget()
+    assert bg2 is bg1, "must NOT rebuild — same instance preserves spend"
+    assert bg2.daily_cap == 12.00, "new cap applied in place"
+    assert bg2.daily_cost_usd == 1.23, "live spend counter preserved across cap change"
+
+
+def test_get_budget_defaults_when_caps_unset(setup_paths, fake_xbmcaddon, monkeypatch):
+    """With no cap settings, _get_budget falls back to the named module
+    defaults (M3) rather than bare literals."""
+    import service
+    monkeypatch.setattr(service, "_budget_instance", None)
+    from lib import settings
+    settings.invalidate_cache()
+
+    bg = service._get_budget()
+    assert bg.per_incident_cap == service.DEFAULT_PER_INCIDENT_CAP_USD
+    assert bg.daily_cap == service.DEFAULT_DAILY_CAP_USD
+    assert bg.monthly_cap == service.DEFAULT_MONTHLY_CAP_USD

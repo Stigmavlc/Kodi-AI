@@ -69,6 +69,15 @@ from lib.tools import registry as tool_registry
 
 # ---- Module-singleton accessors (lazy: deps live in lib.secrets/settings) ----
 
+# M3 — budget cap defaults, named to kill the bare-literal duplication that
+# previously lived here AND in lib/telegram/commands.py (DEFAULT_*_CAP_USD
+# there). Kept as per-module constants on purpose: commands.py can't import
+# service.py (cycle: service.py imports lib.telegram), so a single shared
+# source would need a new low-level module — overkill for three numbers.
+DEFAULT_PER_INCIDENT_CAP_USD = 0.50
+DEFAULT_DAILY_CAP_USD = 5.0
+DEFAULT_MONTHLY_CAP_USD = 30.0
+
 _router_instance = None
 _budget_instance = None
 
@@ -89,6 +98,12 @@ def _get_router():
     mode = settings.get_string("mode", "auto") or "auto"
     mode = mode if mode in ("auto", "manual") else "auto"
     manual_model = settings.get_string("manual_model", "")
+    # M1 — the rebuild predicate watches `mode` + `manual_model` only.
+    # `models_override` (an advanced JSON text setting, not a Telegram command)
+    # is NOT tracked here because TaskModelRouter doesn't retain it after parse,
+    # so we can't cheaply detect a change. For V1 this is acceptable: editing
+    # models_override requires a Kodi restart to take effect on the running
+    # service. (Revisit if/when override becomes a runtime command.)
     if (
         _router_instance is None
         or _router_instance.mode != mode
@@ -104,17 +119,44 @@ def _get_router():
 
 
 def _get_budget():
+    """Return the cached BudgetGuard, re-reading the three caps each call and
+    applying any change IN PLACE.
+
+    H2 — Live cap effect: `/budget daily <n>` (and the Configure-dialog cap
+    fields) persist new caps via settings.set_float + invalidate_cache, but the
+    bot/UI can't reach this in-memory singleton (and importing service.py from
+    lib.telegram would be a cycle). Same pull-not-push pattern as _get_router:
+    each call re-reads the caps (cheap — settings is cached) and, when they
+    differ from the cached guard's caps, mutates the guard's cap attributes in
+    place. We deliberately DO NOT rebuild the guard — it holds the live
+    in-memory spend counters (incident/daily/monthly), and a rebuild would zero
+    them until the next .load(). Mutating only the caps preserves the running
+    spend, so the new cap applies to the NEXT incident with no Kodi restart and
+    no lost spend. (Spend durability across restart is handled by persist(),
+    wired into the reasoner in v0.4.7 — see B1.)
+    """
     global _budget_instance
+    per_incident = settings.get_float("per_incident_cap_usd", DEFAULT_PER_INCIDENT_CAP_USD)
+    daily = settings.get_float("daily_cap_usd", DEFAULT_DAILY_CAP_USD)
+    monthly = settings.get_float("monthly_cap_usd", DEFAULT_MONTHLY_CAP_USD)
     if _budget_instance is None:
         _budget_instance = llm_budget.BudgetGuard(
-            per_incident_cap=settings.get_float("per_incident_cap_usd", 0.50),
-            daily_cap=settings.get_float("daily_cap_usd", 5.0),
-            monthly_cap=settings.get_float("monthly_cap_usd", 30.0),
+            per_incident_cap=per_incident,
+            daily_cap=daily,
+            monthly_cap=monthly,
         )
         try:
             _budget_instance.load()
         except Exception:
             pass
+    else:
+        # Apply any cap change in place — preserves the live spend counters.
+        if _budget_instance.per_incident_cap != per_incident:
+            _budget_instance.per_incident_cap = per_incident
+        if _budget_instance.daily_cap != daily:
+            _budget_instance.daily_cap = daily
+        if _budget_instance.monthly_cap != monthly:
+            _budget_instance.monthly_cap = monthly
     return _budget_instance
 
 

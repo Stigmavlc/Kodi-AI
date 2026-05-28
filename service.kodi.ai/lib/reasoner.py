@@ -51,6 +51,37 @@ class Reasoner:
         approx_in_tokens = sum(len(m.get("content") or "") for m in messages) / 4
         return (approx_in_tokens * in_p + max_tokens * out_p) / 1_000_000
 
+    def _persist_budget(self) -> None:
+        """Flush the budget counters to disk after a real spend was recorded.
+
+        B1 fix (v0.4.7): record_actual() only mutates the in-memory counters;
+        without this call budget_counters.json is never written, so /budget and
+        /status (which build a fresh BudgetGuard + .load()) report $0.00 and the
+        caps/spend reset on every Kodi restart. persist() is atomic (state_paths
+        .atomic_write), so a torn write can't corrupt the counters.
+
+        A persist failure (disk full, FS error) MUST NOT crash the reasoner —
+        the run already produced its result and the in-memory guard still
+        enforces caps for the rest of this session. We log a redacted warning
+        and continue. xbmc is imported lazily so this module stays unit-testable
+        without the Kodi runtime (and the log call is best-effort).
+        """
+        persist = getattr(self.budget, "persist", None)
+        if not callable(persist):
+            return
+        try:
+            persist()
+        except Exception as e:
+            try:
+                import xbmc
+                from . import redactor
+                xbmc.log(
+                    f"[service.kodi.ai] {redactor.redact(f'budget persist failed: {e!r}')}",
+                    xbmc.LOGWARNING,
+                )
+            except Exception:
+                pass
+
     def _tool_schemas(self) -> list[dict]:
         return [t.schema_dict() for t in self.tool_registry.values() if hasattr(t, "schema_dict")]
 
@@ -89,6 +120,7 @@ class Reasoner:
         price = self.router.price_per_mtok(model) or (1.0, 5.0)
         actual_cost = (res.tokens_in * price[0] + res.tokens_out * price[1]) / 1_000_000
         self.budget.record_actual(actual_cost)
+        self._persist_budget()
         return ReasonerOutcome(final_message=res.text, tool_calls_made=0, cost_usd=actual_cost)
 
     def run_with_tools(
@@ -214,6 +246,7 @@ class Reasoner:
             ) / 1_000_000
             cost += actual
             self.budget.record_actual(actual)
+            self._persist_budget()
 
             if accumulated_tool_calls:
                 for tc in accumulated_tool_calls:

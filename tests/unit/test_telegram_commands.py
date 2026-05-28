@@ -203,6 +203,116 @@ def test_cmd_budget_defaults_when_unset(setup_paths):
     assert "30.00" in msg
 
 
+def test_cmd_status_error_does_not_leak_exception(setup_paths, monkeypatch):
+    """H1 — if a data source raises, cmd_status must NOT echo the raw exception
+    to Telegram (it may carry a secret and is not HTML-escaped). It sends a
+    generic message and logs the detail REDACTED."""
+    from lib.telegram import commands
+
+    # Force the except branch with an error whose text embeds a bot token.
+    secret_token = "123456789:AAH-SUPERSECRETTOKEN-shouldneverleak12345"
+
+    def boom(_key):
+        raise RuntimeError(f"db error contacting https://api.telegram.org/bot{secret_token}/x")
+
+    monkeypatch.setattr(commands.secrets, "get_secret", boom)
+
+    logged: list[str] = []
+    fake_xbmc = mock.MagicMock()
+    fake_xbmc.log.side_effect = lambda msg, *a, **k: logged.append(msg)
+    monkeypatch.setitem(sys.modules, "xbmc", fake_xbmc)
+
+    bot = FakeBot()
+    commands.cmd_status(bot, 42, "")
+
+    assert len(bot.sent) == 1
+    msg = bot.sent[0][1]
+    # The secret must NOT appear in the user-facing message.
+    assert secret_token not in msg
+    assert "SUPERSECRETTOKEN" not in msg
+    # Generic, friendly message instead.
+    assert "try again" in msg.lower()
+    # The detail WAS logged, and even the log line is redacted (no raw token).
+    assert logged, "error detail should be logged for the operator"
+    assert all("SUPERSECRETTOKEN" not in line for line in logged)
+    assert any("<redacted-token>" in line for line in logged)
+
+
+def test_cmd_audit_error_does_not_leak_exception(setup_paths, monkeypatch):
+    """H1 — same leak class as cmd_status: a failing audit read must not echo
+    the raw exception (potential secret, unescaped) to Telegram."""
+    from lib.telegram import commands
+    from lib import state_paths
+    import os
+
+    # Make the audit file exist so cmd_audit proceeds to open() it, then make
+    # open() raise an error whose text carries a token.
+    audit_path = state_paths.profile_path("audit/audit.jsonl")
+    os.makedirs(os.path.dirname(audit_path), exist_ok=True)
+    with open(audit_path, "w") as f:
+        f.write("{}\n")
+
+    secret_token = "987654321:BBH-ANOTHERSECRET-tokenvalue-0987654321"
+
+    real_open = open
+
+    def boom_open(path, *a, **k):
+        if str(path) == audit_path:
+            raise OSError(f"read fail on /bot{secret_token}/path")
+        return real_open(path, *a, **k)
+
+    monkeypatch.setattr("builtins.open", boom_open)
+
+    logged: list[str] = []
+    fake_xbmc = mock.MagicMock()
+    fake_xbmc.log.side_effect = lambda msg, *a, **k: logged.append(msg)
+    monkeypatch.setitem(sys.modules, "xbmc", fake_xbmc)
+
+    bot = FakeBot()
+    commands.cmd_audit(bot, 42, "")
+
+    assert len(bot.sent) == 1
+    msg = bot.sent[0][1]
+    assert secret_token not in msg
+    assert "ANOTHERSECRET" not in msg
+    assert "try again" in msg.lower()
+    assert all("ANOTHERSECRET" not in line for line in logged)
+
+
+def test_cmd_budget_daily_rejects_non_finite(setup_paths):
+    """H2 — '/budget daily inf' and '/budget daily nan' must be rejected with a
+    usage message and MUST NOT write the cap (nan <= 0 is False, so the old
+    positivity-only guard let it through)."""
+    from lib.telegram import commands
+    from lib import settings
+
+    setup_paths["daily_cap_usd"] = "5.00"
+    settings.invalidate_cache()
+
+    for bad in ("inf", "-inf", "nan", "NaN", "Infinity"):
+        bot = FakeBot()
+        commands.cmd_budget(bot, 42, f"daily {bad}")
+        msg = bot.sent[0][1]
+        assert "positive number" in msg.lower(), f"{bad!r} should be rejected"
+        # No write happened — the setting is still the original.
+        assert setup_paths.get("daily_cap_usd") == "5.00", (
+            f"{bad!r} must not be persisted as a cap"
+        )
+
+
+def test_cmd_budget_daily_accepts_valid_positive(setup_paths):
+    """H2 sanity — a normal positive amount still writes + confirms."""
+    from lib.telegram import commands
+    from lib import settings
+
+    bot = FakeBot()
+    commands.cmd_budget(bot, 42, "daily 12.50")
+    assert "12.50" in bot.sent[0][1]
+    assert setup_paths.get("daily_cap_usd") == "12.5"
+    settings.invalidate_cache()
+    assert settings.get_float("daily_cap_usd", 0.0) == 12.50
+
+
 def test_dispatch_routes_known_command_and_returns_true():
     """dispatch('/help') → True + cmd_help called."""
     from lib.telegram import commands

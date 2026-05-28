@@ -17,9 +17,20 @@ persisted mode no longer matches; this handler just persists the new mode.
 Spec §5.7.
 """
 from __future__ import annotations
+import math
 from . import auth
 from . import formatters as fmt
-from .. import settings, secrets
+from .. import settings, secrets, redactor
+
+# M3 — budget cap defaults. These same three numbers also live in
+# service.py::_get_budget (named DEFAULT_*_CAP_USD there). They are intentionally
+# duplicated rather than shared from a common module: commands.py deliberately
+# avoids importing service.py (that would be an import cycle — service.py imports
+# lib.telegram), and lib.settings is a low-level accessor that shouldn't carry
+# budget policy. Naming them on both sides removes the bare-literal drift risk.
+DEFAULT_PER_INCIDENT_CAP_USD = 0.50
+DEFAULT_DAILY_CAP_USD = 5.0
+DEFAULT_MONTHLY_CAP_USD = 30.0
 
 
 def cmd_help(bot, chat_id, args_text):
@@ -47,9 +58,9 @@ def _load_budget():
     try:
         from ..llm.budget import BudgetGuard
         bg = BudgetGuard(
-            per_incident_cap=settings.get_float("per_incident_cap_usd", 0.50),
-            daily_cap=settings.get_float("daily_cap_usd", 5.0),
-            monthly_cap=settings.get_float("monthly_cap_usd", 30.0),
+            per_incident_cap=settings.get_float("per_incident_cap_usd", DEFAULT_PER_INCIDENT_CAP_USD),
+            daily_cap=settings.get_float("daily_cap_usd", DEFAULT_DAILY_CAP_USD),
+            monthly_cap=settings.get_float("monthly_cap_usd", DEFAULT_MONTHLY_CAP_USD),
         )
         bg.load()  # no-op when budget_counters.json is absent
         return bg
@@ -112,7 +123,7 @@ def cmd_status(bot, chat_id, args_text):
             daily_cap = bg.daily_cap
         else:
             spent_today = 0.0
-            daily_cap = settings.get_float("daily_cap_usd", 5.0)
+            daily_cap = settings.get_float("daily_cap_usd", DEFAULT_DAILY_CAP_USD)
 
         lines = ["<b>Kodi-AI status</b>"]
         lines.append(
@@ -129,8 +140,23 @@ def cmd_status(bot, chat_id, args_text):
             lines.append(f"Last action: {fmt.escape_html(last)}")
         bot.send_message(chat_id, "\n".join(lines))
     except Exception as e:
-        # Status must always answer, even if a data source is broken.
-        bot.send_message(chat_id, f"<b>Kodi-AI status:</b> error reading state: {e}")
+        # H1 — Status must always answer, but the exception may carry a secret
+        # (e.g. a path or response body echoing a token/key) AND is not HTML-
+        # escaped (parse_mode=HTML). Log the full detail REDACTED to kodi.log
+        # for the operator, and send the user a generic message — never the raw
+        # exception. Matches the redaction invariant used across service.py.
+        try:
+            import xbmc
+            xbmc.log(
+                f"[service.kodi.ai] {redactor.redact(f'cmd_status error: {e!r}')}",
+                xbmc.LOGWARNING,
+            )
+        except Exception:
+            pass
+        bot.send_message(
+            chat_id,
+            "<b>Kodi-AI status:</b> could not read status right now, try again.",
+        )
 
 
 def cmd_budget(bot, chat_id, args_text):
@@ -147,7 +173,12 @@ def cmd_budget(bot, chat_id, args_text):
             except ValueError:
                 bot.send_message(chat_id, "Usage: /budget daily &lt;amount&gt;")
                 return
-            if new_cap <= 0:
+            # H2 — float() accepts "inf"/"nan"/"-inf". `nan <= 0` is False, so a
+            # bare positivity check lets NaN through and would write a garbage
+            # cap that disables budget enforcement (nan comparisons in
+            # pre_call_check are always False → never trips). Reject anything
+            # non-finite OR non-positive before writing.
+            if not math.isfinite(new_cap) or new_cap <= 0:
                 bot.send_message(chat_id, "Daily cap must be a positive number.")
                 return
             settings.set_float("daily_cap_usd", new_cap)
@@ -160,9 +191,9 @@ def cmd_budget(bot, chat_id, args_text):
             return
         # Any other args → fall through to showing current budget.
 
-    per_incident = settings.get_float("per_incident_cap_usd", 0.50)
-    daily = settings.get_float("daily_cap_usd", 5.0)
-    monthly = settings.get_float("monthly_cap_usd", 30.0)
+    per_incident = settings.get_float("per_incident_cap_usd", DEFAULT_PER_INCIDENT_CAP_USD)
+    daily = settings.get_float("daily_cap_usd", DEFAULT_DAILY_CAP_USD)
+    monthly = settings.get_float("monthly_cap_usd", DEFAULT_MONTHLY_CAP_USD)
 
     bg = _load_budget()
     spent_today = bg.daily_cost_usd if bg is not None else 0.0
@@ -223,7 +254,16 @@ def cmd_audit(bot, chat_id, args_text):
         lines = tail.splitlines()[-10:]
         bot.send_message(chat_id, f"<pre>{chr(10).join(lines)}</pre>")
     except Exception as e:
-        bot.send_message(chat_id, f"Audit read failed: {e}")
+        # H1 — same class of leak as cmd_status: redact to log, generic to user.
+        try:
+            import xbmc
+            xbmc.log(
+                f"[service.kodi.ai] {redactor.redact(f'cmd_audit error: {e!r}')}",
+                xbmc.LOGWARNING,
+            )
+        except Exception:
+            pass
+        bot.send_message(chat_id, "Audit read failed, try again.")
 
 
 def cmd_stub(bot, chat_id, args_text, command_name):
