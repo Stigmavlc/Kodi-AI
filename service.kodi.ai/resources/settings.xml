@@ -31,7 +31,7 @@
     <setting id="redaction_allowlist_extra" type="text" label="Redaction allow-list extra (CSV)" default=""/>
   </category>
   <category label="Advanced">
-    <setting id="relay_url" type="text" label="Relay URL (Cloudflare Worker)" default=""/>
+    <setting id="relay_url" type="text" label="Relay URL (Cloudflare Worker)" default="https://kodi-ai-relay.stigmavlc.workers.dev"/>
     <!-- Internal: written by default.py (script process) to nudge the service
          process to (re)start the bot after the phone/manual setup stores the
          token in secrets.json. Not meant for the user to edit. -->
