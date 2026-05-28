@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <addon id="service.kodi.ai"
        name="Kodi-AI"
-       version="0.5.0"
+       version="0.6.0"
        provider-name="ivan">
   <requires>
     <import addon="xbmc.python" version="3.0.1"/>
@@ -17,7 +17,8 @@
     <description lang="en_GB">Monitors Kodi logs, classifies issues with a cheap LLM, attempts auto-fixes via OpenRouter tool-use agent, surfaces results via Telegram bot. V1 personal use on Android TV.</description>
     <platform>all</platform>
     <license>MIT</license>
-    <news>0.5.0: on-screen + Telegram notification the moment a problem is detected ('working on it') and again when resolved ('fixed' / 'couldn't fix it, here's why'); fixes cases where the agent went silent after stopping.
+    <news>0.6.0: the agent now ASKS before changing anything (Apply/No in Telegram) instead of acting silently; you can message the bot in plain language to inspect and (with confirmation) fix things; the agent no longer mistakes its own actions for new problems. Auto-undo still pending.
+0.5.0: on-screen + Telegram notification the moment a problem is detected ('working on it') and again when resolved ('fixed' / 'couldn't fix it, here's why'); fixes cases where the agent went silent after stopping.
 0.4.7: budget spend now actually persists (was never written to disk, so /budget and /status showed $0.00 and caps reset on restart); /status errors no longer risk leaking details; /budget rejects invalid amounts and cap changes apply live.
 0.4.6: /status, /budget, /mode now use real data - /mode actually saves the mode (was a no-op), /status and /budget show your real settings + spend instead of placeholders.
 0.4.5: fixed /help and all other slash commands - the bot never dispatched commands (every message went to the LLM); now /help /status /budget /pause etc. work.
