@@ -73,7 +73,7 @@ Get an OpenRouter key at <https://openrouter.ai/keys> — $5 of credit is
 typically more than enough for a month of light use.
 
 After setup, the **Status** label in Configure → Telegram updates to
-**✓ Active — monitoring Kodi logs**. You're done.
+**Active - monitoring Kodi logs**. You're done.
 
 Settings (budget caps, redaction allowlist, etc.) live in the same
 Configure dialog under their own tabs.
