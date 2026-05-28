@@ -92,11 +92,19 @@ https://kodi-ai-relay.your-subdomain.workers.dev
 
 Copy that URL.
 
-## 7. Tell Kodi about it
+## 7. Tell Kodi about it (only if not already pre-filled)
 
-On your TV: **Kodi -> Settings (gear) -> Add-ons -> Kodi-AI -> Configure ->
-Advanced -> Relay URL** and paste the
-`https://kodi-ai-relay.your-subdomain.workers.dev` URL there. Save.
+The addon ships with the project's relay URL as the **default**, so most
+installs need nothing here. Check first:
+
+**Kodi -> Settings (gear) -> Add-ons -> Kodi-AI -> Configure -> Advanced ->
+Relay URL**.
+
+- If it already shows a `https://kodi-ai-relay.*.workers.dev` URL -> you're
+  done, skip this step.
+- If it's **empty** (can happen on installs that ran an older version which
+  saved an empty value before the default existed), or if you deployed your
+  **own** relay under a different subdomain, paste your URL there and Save.
 
 That's it. Now go to **Configure -> Telegram -> "Set up via phone"** and
 follow the on-screen code.
