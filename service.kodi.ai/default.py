@@ -42,12 +42,15 @@ ADDON_ID = "service.kodi.ai"
 
 
 ADDON_NAME = "Kodi-AI"
-COLOR_ACCENT = "00D4FF"   # cyan — matches icon glow
-COLOR_DIM = "7FB3D5"      # muted cyan for labels
-COLOR_OK = "00E676"       # bright green
-COLOR_WARN = "FFB300"     # amber
-COLOR_ERROR = "FF5252"    # bright red
-COLOR_BODY = "F0F8FF"     # off-white body text
+# Kodi [COLOR] tags require 8-hex AARRGGBB (alpha first). A 6-hex value makes
+# Kodi read the leading byte as alpha — e.g. "00D4FF" -> alpha 00 -> fully
+# TRANSPARENT (invisible text). Always include the FF alpha prefix.
+COLOR_ACCENT = "FF00D4FF"  # cyan — matches icon glow
+COLOR_DIM = "FF7FB3D5"     # muted cyan for labels
+COLOR_OK = "FF00E676"      # bright green
+COLOR_WARN = "FFFFB300"    # amber
+COLOR_ERROR = "FFFF5252"   # bright red
+COLOR_BODY = "FFF0F8FF"    # off-white body text
 
 _HR = "[COLOR " + COLOR_DIM + "]" + ("─" * 48) + "[/COLOR]"
 _BULLET = "[COLOR " + COLOR_ACCENT + "]▸[/COLOR]"
