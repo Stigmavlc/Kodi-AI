@@ -4,6 +4,70 @@ All notable changes to Kodi-AI are documented here. The project follows
 [Semantic Versioning](https://semver.org/) (with V1 being a personal-use
 release).
 
+## [0.4.0] — 2026-05-28
+
+Device-code setup. Replaces TV-keyboard token entry with an
+OAuth-device-code flow (like Trakt / Real-Debrid) brokered by a Cloudflare
+Worker the user deploys on their own free account.
+
+### Added
+
+- **Cloudflare Worker relay** (`cloudflare/worker.js`). A single Worker the
+  user deploys (their own, free tier) that brokers pairing between the TV and
+  the phone. Endpoints: `/api/device/new` (Kodi mints a session and OWNS the
+  setup_secret), `/api/device/poll` (device_code in the `Authorization` header
+  so it never lands in Cloudflare's URL logs; tombstone-on-read),
+  `/api/validate-telegram` + `/api/validate-openrouter` (server-side
+  validation with generic errors that never echo upstream bodies),
+  `/api/submit` (per-code submit cap, idempotent double-submit, ready payload
+  TTL 120s, one-time user_code). Secrets transit KV transiently (≤2 min TTL)
+  and are never logged. Inline self-contained mobile page (dark + cyan).
+- **`cloudflare/wrangler.toml`**, **`cloudflare/DEPLOY.md`** (step-by-step +
+  free-tier limits), **`cloudflare/test.http`** (manual curl smoke tests; the
+  Worker is not in the Python test gate).
+- **`setup_via_phone` action** (`default.py`). Reads the relay URL, generates
+  + stores the setup_secret locally (Kodi owns it), mints a session, shows the
+  code in a `DialogProgress`, polls the relay with the device_code in the
+  Authorization header (checks cancel + Kodi abort each iteration, 300s
+  timeout), then **human-confirms the received bot @username** before storing
+  anything, stores secrets + settings, and nudges the service process to start
+  the bot.
+- **`setup_manual` action** (`default.py`). No-phone/no-relay fallback: type
+  the bot token on the TV, validate via getMe, store, generate the
+  setup_secret, nudge the service, and finish in Telegram.
+- **`relay_url` setting** (Advanced) for the deployed Worker URL, plus an
+  internal `_pairing_nudge` cross-process signal.
+
+### Changed
+
+- **Telegram settings category** collapses to focusable action buttons
+  ("Set up via phone", "Manual setup", "Reset bot owner") with the read-only
+  status / bot-username / pairing-command fields separated by lseps. Fixes the
+  v0.3.x d-pad dead zone where consecutive disabled fields were unreachable.
+- **Service reactor** (`service.py`). `_handle_settings_changed` now reacts to
+  the `_pairing_nudge` internal setting by re-reading secrets and calling
+  `BotHolder.set_token_and_start` (idempotent), so the script process can start
+  T3 in the service process. The nudge is debounced and seeded at boot.
+- **Gentler pairing error** (`bot.py`). `/start <secret>` with no setup in
+  progress (no stored secret) now replies "No pairing in progress. Start setup
+  on your TV first" instead of a flat "Invalid secret". A stored-but-mismatched
+  secret keeps "Invalid secret - check the code."
+
+### Removed
+
+- `docs/REMOTE-PASTE.md` (Kore/Yatse remote-paste approach) and all references
+  to it — superseded by the device-code phone flow.
+
+### Tests
+
+- `tests/unit/test_device_code_client.py` (10 tests: happy path, cancel,
+  confirm-No, timeout, expired, network error, empty/garbage relay URL,
+  Authorization-header-not-URL, secret-mismatch).
+- `tests/unit/test_setup_manual.py` (4 tests incl. token-leak redaction).
+- `tests/unit/test_settings_changed_handler.py` (+3 `_pairing_nudge` tests).
+- `tests/unit/test_telegram_bot.py` (+2 grace-message tests).
+- Suite: 277 → 296 passing.
+
 ## [0.3.1] — 2026-05-27
 
 Critical security + correctness fixes from the v0.3.0 post-implementation

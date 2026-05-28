@@ -915,7 +915,7 @@ def main() -> None:
     except Exception:
         pass
     try:
-        audit_log.write("startup", details={"version": "0.3.2"})
+        audit_log.write("startup", details={"version": "0.4.0"})
     except Exception:
         pass
 

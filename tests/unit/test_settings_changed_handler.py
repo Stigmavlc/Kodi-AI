@@ -617,6 +617,76 @@ def test_set_token_and_start_twice_shows_restart_notice(
     )
 
 
+def test_pairing_nudge_starts_t3_from_secrets(
+    setup_paths, fake_xbmcaddon, stub_xbmcgui, stub_bot_holder, monkeypatch,
+):
+    """v0.4.0 — The script process (default.py) writes bot_token + key into
+    secrets.json then bumps the internal _pairing_nudge setting. The service's
+    settings-changed handler must react by re-reading secrets and calling
+    bot_holder.set_token_and_start so T3 starts in THIS process.
+    """
+    from lib import secrets
+    secrets.set_secret("bot_token", "12345:nudge_token")
+    # Simulate the script-process nudge.
+    fake_xbmcaddon["_pairing_nudge"] = "1234567890.5"
+    holder, started = stub_bot_holder
+    state = {"last_known_bot_token": "", "last_pairing_nudge": ""}
+
+    # No requests.get should be called — the nudge path bypasses getMe.
+    import requests
+    called = []
+    monkeypatch.setattr(requests, "get", lambda *a, **kw: (
+        called.append(True), mock.MagicMock(status_code=200, json=lambda: {})
+    )[1])
+
+    import service
+    service._handle_settings_changed(holder, state)
+
+    assert started == ["12345:nudge_token"], (
+        "expected nudge path to start T3 with the secrets bot_token"
+    )
+    assert called == [], "nudge path must NOT call Telegram getMe"
+    # Debounce token recorded.
+    assert state["last_pairing_nudge"] == "1234567890.5"
+
+
+def test_pairing_nudge_debounced_on_repeat(
+    setup_paths, fake_xbmcaddon, stub_xbmcgui, stub_bot_holder, monkeypatch,
+):
+    """A second handler call with the SAME nudge value must not re-start T3."""
+    from lib import secrets
+    secrets.set_secret("bot_token", "12345:nudge_token")
+    fake_xbmcaddon["_pairing_nudge"] = "777.0"
+    holder, started = stub_bot_holder
+    state = {"last_known_bot_token": "", "last_pairing_nudge": ""}
+
+    import service
+    service._handle_settings_changed(holder, state)
+    assert started == ["12345:nudge_token"]
+
+    started.clear()
+    # Same nudge value, handler called again (e.g. user edited another setting).
+    service._handle_settings_changed(holder, state)
+    assert started == [], "expected nudge debounce on identical value"
+
+
+def test_pairing_nudge_without_token_does_not_start(
+    setup_paths, fake_xbmcaddon, stub_xbmcgui, stub_bot_holder, monkeypatch,
+):
+    """If the nudge fires but secrets has no bot_token yet (race / partial
+    write), do NOT attempt to start T3."""
+    fake_xbmcaddon["_pairing_nudge"] = "555.0"
+    holder, started = stub_bot_holder
+    state = {"last_known_bot_token": "", "last_pairing_nudge": ""}
+
+    import service
+    service._handle_settings_changed(holder, state)
+
+    assert started == []
+    # Nudge still recorded so we don't re-fire on the same value.
+    assert state["last_pairing_nudge"] == "555.0"
+
+
 def test_set_token_and_start_same_token_idempotent(
     setup_paths, fake_xbmcaddon, monkeypatch,
 ):

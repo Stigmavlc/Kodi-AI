@@ -47,36 +47,48 @@ python tools/build_repo.py
 
 ## First-run setup
 
-All setup happens inside Kodi's standard Configure dialog. No web pages,
-no QR codes, no popup windows.
+Setup happens from your phone — no typing long tokens on a TV remote.
 
-1. **Open Configure.** In Kodi: **Add-ons → Services → Kodi-AI →
-   Configure** (or hit the gear icon on the addon tile).
-2. **Telegram tab — Step 1: create your bot.** In Telegram, message
-   [@BotFather](https://t.me/BotFather), send `/newbot`, follow the
-   prompts, and copy the token. Paste the token into the **Bot token**
-   field in Configure.
-   - **Tip:** install [Kore](https://kodi.tv/article/kore-official-remote-android-now-available/)
-     (Android) or Yatse (iOS), enable **Kodi → Settings → Services →
-     Control → Allow remote control via HTTP**, and pair the remote.
-     You can then paste from your phone into Configure fields instead
-     of typing on a TV keyboard. See [docs/REMOTE-PASTE.md](docs/REMOTE-PASTE.md).
-3. **Step 2: pair your phone.** As soon as the token validates, the
-   **Pairing command** field in Configure shows
-   `/start <secret> to @<your-bot>`. Send that exact text to your bot in
-   Telegram.
-4. **Step 3: finish in Telegram.** Your bot will DM you and ask for the
-   OpenRouter API key (sk-or-...). Paste it. Then it asks for the agent
-   mode (Auto recommended, or Manual). Tap one. Done.
+### One-time: deploy your relay
 
-Get an OpenRouter key at <https://openrouter.ai/keys> — $5 of credit is
-typically more than enough for a month of light use.
+The phone setup talks to a tiny **Cloudflare Worker that you deploy on your
+own free Cloudflare account**. It only ever brokers your secrets transiently
+(under 2 minutes, never logged) — it is your relay, no third party involved.
 
-After setup, the **Status** label in Configure → Telegram updates to
-**Active - monitoring Kodi logs**. You're done.
+Follow [cloudflare/DEPLOY.md](cloudflare/DEPLOY.md) once (~5 minutes). At the
+end you paste your Worker URL (`https://kodi-ai-relay.<you>.workers.dev`) into
+Kodi: **Add-ons → Kodi-AI → Configure → Advanced → Relay URL**.
 
-Settings (budget caps, redaction allowlist, etc.) live in the same
-Configure dialog under their own tabs.
+### Set up via phone
+
+1. **Open Configure → Telegram → "Set up via phone".**
+2. Your TV shows a short **code** and the relay URL.
+3. On your phone, open that URL, type the code, then fill the form:
+   - **Bot token** — in Telegram, message
+     [@BotFather](https://t.me/BotFather), send `/newbot`, follow the prompts,
+     copy the token, and tap **Validate** (it confirms your bot's @username).
+   - **OpenRouter key** — from <https://openrouter.ai/keys> (~$5 of credit
+     lasts a long time). Tap **Validate**.
+   - **Mode** — Auto (recommended) or Manual.
+   - Tap **Send to TV**.
+4. **Confirm on your TV.** Kodi shows the bot @username it received and asks
+   "Is this YOUR bot?". Confirm.
+5. **Finish in Telegram.** Open your bot and tap **Start** (or the
+   "Open Telegram to finish pairing" button on your phone, *after* the TV
+   shows it's ready).
+
+After setup, the **Status** label in Configure → Telegram shows the bot is
+verified and then **Active** once monitoring begins. You're done.
+
+### No phone? Manual fallback
+
+If you'd rather not use the relay, choose **Configure → Telegram → "Manual
+setup"** instead. Type the bot token on the TV; Kodi validates it and shows
+the `/start <secret>` command to send to your bot, which then DMs you for the
+OpenRouter key + mode.
+
+Settings (budget caps, redaction allowlist, etc.) live in the same Configure
+dialog under their own tabs.
 
 ---
 

@@ -45,11 +45,47 @@ Redaction is unit-tested in `tests/unit/test_redactor.py` and
   [Privacy Policy](https://telegram.org/privacy). Only the bot owner
   (you) can see these messages.
 
-### Telegram DM exposure during setup (v0.3.0)
+### Device-code setup via relay (v0.4.0)
 
-The v0.3.0 inline-settings setup pivot sends the OpenRouter API key
-through a Telegram DM during the initial pairing flow (the user pastes
-`sk-or-...` to the bot after `/start`). This trades one risk for another:
+The recommended setup path ("Set up via phone") sends your bot token and
+OpenRouter key from your phone to your TV through a **Cloudflare Worker that
+you deploy on your own free Cloudflare account** (see
+[cloudflare/DEPLOY.md](cloudflare/DEPLOY.md)). No third-party server is
+involved — it is your relay, on your account.
+
+The secrets transit the relay **transiently**:
+
+- **Encrypted in transit.** All traffic is HTTPS (Cloudflare default).
+- **Short TTL.** The Worker stores the pairing session in Cloudflare KV with
+  a maximum 5-minute lifetime for the pending code, and only **2 minutes** for
+  the "ready" payload that briefly holds your secrets.
+- **Delete-on-read.** The instant your TV reads the payload, the Worker
+  overwrites the KV entry with a tombstone and deletes it, so a second read
+  returns nothing. The one-time code is consumed on submit.
+- **Never logged.** The Worker never writes your bot token, OpenRouter key,
+  device code, or setup secret to any log. Upstream validation errors from
+  Telegram/OpenRouter are mapped to generic strings so an error body can't
+  echo a token-bearing URL.
+- **Bounded guessing.** A per-code submit cap (5 attempts) poisons a live
+  code after repeated bad submits.
+
+**Residual risk.** While the payload is in KV (up to 2 minutes, or until your
+TV reads it — usually seconds), it exists on Cloudflare's infrastructure under
+your account. If you would rather avoid the relay entirely, use **Manual
+setup** (type the bot token on the TV) and let the bot collect the OpenRouter
+key via DM, or set both directly in `secrets.json`.
+
+**User control.** You can rotate your bot token (via @BotFather) or your
+OpenRouter key (at <https://openrouter.ai/keys>) at any time — neither is
+tied to the relay.
+
+### Telegram DM exposure during setup (v0.3.0+)
+
+With the **Manual setup** path (and the legacy v0.3.0 inline flow), the
+OpenRouter API key is sent through a Telegram DM during pairing (the user
+pastes `sk-or-...` to the bot after `/start`). The recommended **device-code
+"Set up via phone"** path does NOT use Telegram for the key — it goes through
+your relay (above) instead. For the DM path, this trades one risk for another:
 
 - **Mitigation 1.** Immediately after validating the key, the bot calls
   the Telegram `deleteMessage` API to scrub the user's message

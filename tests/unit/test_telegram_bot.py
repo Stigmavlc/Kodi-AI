@@ -94,6 +94,40 @@ def test_handle_update_callback_query_authorized_enqueues_resume(monkeypatch):
     assert found
 
 
+def test_start_no_setup_in_progress_gives_gentle_message(monkeypatch):
+    """BLOCKER 1 belt-and-suspenders: /start <secret> when NO setup_secret is
+    stored (no pairing in progress) gets a gentle 'start setup on your TV'
+    message, not a flat 'Invalid secret'."""
+    import lib.telegram.bot as bot_mod
+    import lib.telegram.auth as auth
+    monkeypatch.setattr(auth, "try_authorize_first_start", lambda cid, s: False)
+    monkeypatch.setattr(auth, "current_setup_secret", lambda: None)
+    sent = []
+    monkeypatch.setattr(bot_mod.TelegramBot, "send_message",
+                        lambda self, chat_id, text, **kw: sent.append(text))
+    b = bot_mod.TelegramBot(bot_token="123:abc")
+    b._handle_update({"message": {"chat": {"id": 9}, "text": "/start oldsecret", "message_id": 1}})
+    assert sent, "expected a reply"
+    assert "no pairing in progress" in sent[0].lower()
+    assert "set up via phone" in sent[0].lower() or "tv" in sent[0].lower()
+
+
+def test_start_wrong_secret_gives_invalid_message(monkeypatch):
+    """When a setup_secret IS stored but the provided one is wrong, keep the
+    stricter 'Invalid secret - check the code.' message."""
+    import lib.telegram.bot as bot_mod
+    import lib.telegram.auth as auth
+    monkeypatch.setattr(auth, "try_authorize_first_start", lambda cid, s: False)
+    monkeypatch.setattr(auth, "current_setup_secret", lambda: "the-real-secret")
+    sent = []
+    monkeypatch.setattr(bot_mod.TelegramBot, "send_message",
+                        lambda self, chat_id, text, **kw: sent.append(text))
+    b = bot_mod.TelegramBot(bot_token="123:abc")
+    b._handle_update({"message": {"chat": {"id": 9}, "text": "/start wrongsecret", "message_id": 1}})
+    assert sent, "expected a reply"
+    assert "invalid secret" in sent[0].lower()
+
+
 def test_handle_update_unauthorized_message_does_not_enqueue(monkeypatch):
     """Unauthorized message → bot replies prompting /start, does NOT enqueue UserMsg."""
     from lib import concurrency
